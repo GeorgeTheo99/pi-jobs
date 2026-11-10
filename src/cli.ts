@@ -124,7 +124,6 @@ async function verify(port: number): Promise<number> {
     const health = (await res.json()) as { ok?: boolean; apiVersion?: number; version?: string };
     if (!res.ok || health.ok !== true) throw new Error(`HTTP ${res.status}`);
     console.log(`pi-jobs ${health.version ?? "?"} is loaded and healthy on 127.0.0.1:${port} (API v${health.apiVersion})`);
-    console.log("Agent sign-ins, schedules and runs NOT tested");
     return 0;
   } catch (error) {
     console.error(`${label} is loaded but http://127.0.0.1:${port}/api/health failed: ${(error as Error).message}`);
