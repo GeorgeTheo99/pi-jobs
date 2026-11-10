@@ -1,0 +1,26 @@
+{
+  "name": "pi-jobs",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Scheduled and event-triggered coding-agent jobs (Pi, Claude Code, Codex) with a local web UI",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "build": "npm --prefix ui run build",
+    "test": "node --test --test-timeout=60000 'test/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test && npm --prefix ui run lint && npm --prefix ui test && npm run build"
+  },
+  "dependencies": {
+    "croner": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "~5.9.3"
+  }
+}

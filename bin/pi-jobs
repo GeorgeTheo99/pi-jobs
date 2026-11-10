@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the pi-jobs CLI from this checkout, wherever the link to this script lives.
+set -eu
+self=$(realpath "$0")
+exec node "$(dirname "$self")/../src/cli.ts" "$@"
