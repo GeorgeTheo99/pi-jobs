@@ -2,7 +2,7 @@
 // pi-jobs CLI: manages API tokens directly in the state database, so access can be bootstrapped
 // by whoever has a shell on this machine.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -20,7 +20,11 @@ const USAGE = `Usage:
   pi-jobs token revoke <name>
   pi-jobs client-config <url>                     Point this machine's Pi tools at a server;
                                                   reads the token from stdin (prompts on a
-                                                  terminal), so it stays out of ps and history`;
+                                                  terminal), so it stays out of ps and history
+  pi-jobs connect-local                           Point this machine's Pi tools at the local
+                                                  server, minting a token only when needed
+  pi-jobs verify                                  Read-only check: the LaunchAgent is loaded and
+                                                  the server answers /api/health`;
 
 function writeClientConfig(url: string, token: string): void {
   mkdirSync(path.dirname(CLIENT_CONFIG), { recursive: true, mode: 0o700 });
@@ -76,8 +80,61 @@ async function readSecret(prompt: string): Promise<string> {
   }
 }
 
+/**
+ * Points this machine's Pi tools at the local server. Keeps a client config that already works
+ * (a loopback URL with a token this server accepts) or that points at another server.
+ */
+function connectLocal(store: Store, port: number): number {
+  let current: { url?: unknown; token?: unknown } = {};
+  if (existsSync(CLIENT_CONFIG)) {
+    try {
+      current = JSON.parse(readFileSync(CLIENT_CONFIG, "utf8"));
+    } catch {
+      // Unreadable: replace it below.
+    }
+  }
+  const currentUrl = typeof current.url === "string" ? URL.parse(current.url) : null;
+  if (currentUrl && !["127.0.0.1", "localhost", "[::1]"].includes(currentUrl.hostname)) {
+    console.log(`Pi tools already use ${current.url}; leaving ${CLIENT_CONFIG} unchanged`);
+    return 0;
+  }
+  if (currentUrl && typeof current.token === "string" && store.authenticate(current.token)) {
+    console.log(`Pi tools already use this server (${CLIENT_CONFIG})`);
+    return 0;
+  }
+  const host = os.hostname().replace(/\.local$/i, "").toLowerCase().replace(/[^\w.-]+/g, "-").slice(0, 30) || "local";
+  const taken = new Set(store.listTokens().map((t) => t.name));
+  let name = `${host}-pi`;
+  for (let n = 2; taken.has(name); n++) name = `${host}-pi-${n}`;
+  writeClientConfig(`http://127.0.0.1:${port}`, store.createToken(name).secret);
+  console.log(`Pi tools now use this server with token "${name}"`);
+  return 0;
+}
+
+/** Read-only readiness check used by pi-setup's doctor. Prints evidence; exits non-zero on failure. */
+async function verify(port: number): Promise<number> {
+  const label = "com.local.pi-jobs";
+  const loaded = spawnSync("launchctl", ["print", `gui/${process.getuid?.() ?? 0}/${label}`], { stdio: "ignore" });
+  if (loaded.status !== 0) {
+    console.error(`${label} is not loaded; run install.sh in the pi-jobs checkout`);
+    return 1;
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(5000) });
+    const health = (await res.json()) as { ok?: boolean; apiVersion?: number; version?: string };
+    if (!res.ok || health.ok !== true) throw new Error(`HTTP ${res.status}`);
+    console.log(`pi-jobs ${health.version ?? "?"} is loaded and healthy on 127.0.0.1:${port} (API v${health.apiVersion})`);
+    console.log("Agent sign-ins, schedules and runs NOT tested");
+    return 0;
+  } catch (error) {
+    console.error(`${label} is loaded but http://127.0.0.1:${port}/api/health failed: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, sub, ...rest] = argv;
+  if (command === "verify" && !sub) return verify(loadConfig().port);
   if (command === "client-config" && sub && rest.length === 0) {
     const url = URL.parse(sub);
     if (!url || !/^https?:$/.test(url.protocol)) {
@@ -96,13 +153,14 @@ async function main(argv: string[]): Promise<number> {
     writeClientConfig(sub.replace(/\/+$/, ""), token);
     return 0;
   }
-  if (command !== "token") {
+  if (command !== "token" && command !== "connect-local") {
     console.error(USAGE);
     return 2;
   }
   const config = loadConfig();
   const store = new Store(path.join(config.stateDir, "pi-jobs.db"));
   try {
+    if (command === "connect-local") return connectLocal(store, config.port);
     if (sub === "list") {
       for (const t of store.listTokens()) console.log(`${t.name}\tcreated ${t.createdAt}\tlast used ${t.lastUsedAt ?? "never"}`);
       return 0;

@@ -53,7 +53,7 @@ export function TokensSection() {
     window.location.reload();
   };
 
-  const setupCommand = `pi-jobs client-config ${serverUrl()}`;
+  const setupCommand = `pi-shared setup --pi-jobs ${serverUrl()}`;
 
   return (
     <section className="grid max-w-[760px] gap-4">
@@ -74,7 +74,8 @@ export function TokensSection() {
             <CopyButton value={created.secret} label="Copy token" />
           </div>
           <p className="text-[13px] text-fog">
-            To point another machine's Pi tools here, run this there and paste the token when asked:
+            To point another machine's Pi tools here, run this there and paste the token when asked
+            (or, where pi-jobs is cloned, <code className="font-mono text-bone">pi-jobs client-config {serverUrl()}</code>):
           </p>
           <div className="flex items-center gap-1">
             <code className="log-view min-w-0 flex-1 overflow-x-auto rounded-[9px] px-3 py-2.5 whitespace-nowrap text-bone">{setupCommand}</code>

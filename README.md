@@ -15,11 +15,16 @@ Requires Node 24+ and git, plus the agent CLIs you want to use.
 
 ```sh
 git clone https://github.com/GeorgeTheo99/pi-jobs.git && cd pi-jobs
-npm ci && npm --prefix ui ci && npm run build
-scripts/install-launchagent.sh          # LaunchAgent on 127.0.0.1:8790, links ~/.local/bin/pi-jobs
-pi-jobs token create my-browser         # paste this token into the UI at http://127.0.0.1:8790
-pi-jobs token create my-pi --client-config   # lets this machine's Pi tools use the server
+./install.sh                    # build, LaunchAgent on 127.0.0.1:8790, ~/.local/bin/pi-jobs, Pi tools
+pi-jobs token create admin      # paste this token into the UI at http://127.0.0.1:8790
 ```
+
+With [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s setup, `pi-shared setup --pi-jobs local`
+does the same and keeps pi-jobs updated with `pi-shared update`.
+
+`install.sh` builds the server and UI, installs the LaunchAgent, links the CLI, and runs
+`pi-jobs connect-local` so this machine's Pi tools use the local server. Re-run it after pulling
+changes; it keeps the previous install's proxy host names and client token.
 
 The server listens on loopback only. To reach it from other devices, put it behind a reverse
 proxy (see [Behind a proxy](#behind-a-proxy)).
@@ -110,8 +115,8 @@ call this API. They are registered only when a server is configured:
 
 | Machine | Setup |
 |---|---|
-| The server itself | `pi-jobs token create <machine>-pi --client-config` (saves `~/.config/pi-jobs/client.json` with `http://127.0.0.1:8790`) |
-| Another tailnet machine | Create a token in Settings, then run the shown `pi-jobs client-config <url>` there and paste the token (it reads stdin, so the token stays out of `ps` and shell history), or write `client.json` by hand |
+| The server itself | Done by `install.sh` (`pi-jobs connect-local`: saves `~/.config/pi-jobs/client.json` with `http://127.0.0.1:8790`) |
+| Another tailnet machine | Create a token in Settings, then run `pi-shared setup --pi-jobs <url>` there and paste the token when asked (`--pi-jobs-token-file <file>` for scripts). Without pi-shared's setup: `pi-jobs client-config <url>` from a pi-jobs checkout, or write `client.json` by hand |
 
 A loopback client sends the checkout's own path. A remote client sends the checkout's git
 remotes, and `POST /api/repos/resolve` picks the matching checkout under `PI_JOBS_REPO_ROOTS`
@@ -127,7 +132,7 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 - Strip the prefix and send `X-Forwarded-Prefix: /pi-jobs`; the server sets the UI's
   `<base href>` from it.
 - Add the host names clients use (`Host` header) to `PI_JOBS_ALLOWED_HOSTS` when installing:
-  `PI_JOBS_ALLOWED_HOSTS=host.example.ts.net,100.x.y.z scripts/install-launchagent.sh`.
+  `PI_JOBS_ALLOWED_HOSTS=host.example.ts.net,100.x.y.z ./install.sh`. Later runs keep them.
 - Keep it private: the token is the only login. A tailnet-only route (for example Tailscale Serve
   without Funnel) is a good fit; `GET /api/health` is the only unauthenticated API route.
 
@@ -156,8 +161,9 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 
 | Task | Command |
 |---|---|
-| Install or reinstall the service | `npm ci && npm --prefix ui ci && npm run build && PI_JOBS_ALLOWED_HOSTS=<hosts> scripts/install-launchagent.sh` |
+| Install, reinstall or upgrade | `git pull && ./install.sh` (`PI_JOBS_ALLOWED_HOSTS=<hosts>` to change proxy host names) |
 | Restart after a code change | `launchctl kickstart -k gui/$(id -u)/com.local.pi-jobs` (rebuild the UI first if it changed) |
+| Check | `pi-jobs verify` (LaunchAgent loaded, `/api/health` answers) |
 | Uninstall | `launchctl bootout gui/$(id -u)/com.local.pi-jobs && rm ~/Library/LaunchAgents/com.local.pi-jobs.plist` |
 | Server log | `~/.local/state/pi-jobs/server.log` |
 
