@@ -330,3 +330,81 @@ test("tags and revision expressions start from local refs without fetching; orig
   const { run } = await runWith("origin/main");
   assert.equal(run.baseCommit, git(laptop, "rev-parse", "HEAD"));
 });
+
+test("a failed run is retried with backoff until the job's retries run out", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("fail");
+  const job = ctx.store.createJob(ctx.jobInput({ retries: 2 }), null);
+  const result = ctx.runner.trigger(job, "webhook", '{"bug": 1}');
+  assert.ok("run" in result);
+  const first = await waitForFinish(ctx.runner, result.run.id);
+  assert.equal(first.status, "failed");
+
+  const [second] = ctx.store.listRuns({ jobId: job.id, limit: 1 });
+  assert.equal(second?.retryOf, first.id);
+  assert.equal(second.attempt, 2);
+  assert.equal(second.status, "queued");
+  assert.equal(second.trigger, "webhook");
+  assert.equal(second.payload, '{"bug": 1}');
+  assert.ok(Date.parse(second.notBefore!) >= Date.parse(first.finishedAt!) + 100, "waits before retrying");
+  assert.deepEqual(ctx.runner.trigger(job, "schedule"), { skipped: "a run of this job is already queued or running" });
+
+  await waitForFinish(ctx.runner, second.id);
+  const [third] = ctx.store.listRuns({ jobId: job.id, limit: 1 });
+  assert.equal(third?.attempt, 3);
+  assert.ok(Date.parse(third.notBefore!) - Date.parse(ctx.store.getRun(second.id)!.finishedAt!) >= 400, "backs off 4x");
+  await waitForFinish(ctx.runner, third.id);
+  assert.equal(ctx.store.listRuns({ jobId: job.id }).length, 3, "no retry after the last attempt");
+});
+
+test("canceled runs, failed checks and jobs without retries are not retried", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("edit");
+  const checked = ctx.store.createJob(ctx.jobInput({ name: "Checked", retries: 2, checkCommand: "exit 1" }), null);
+  const checkRun = ctx.runner.trigger(checked, "manual");
+  assert.ok("run" in checkRun);
+  assert.equal((await waitForFinish(ctx.runner, checkRun.run.id)).checkStatus, "failed");
+
+  ctx.useFakeAgent("fail");
+  const none = ctx.store.createJob(ctx.jobInput({ name: "None", retries: 0 }), null);
+  const noneRun = ctx.runner.trigger(none, "manual");
+  assert.ok("run" in noneRun);
+  await waitForFinish(ctx.runner, noneRun.run.id);
+
+  ctx.useFakeAgent("sleep");
+  const canceled = ctx.store.createJob(ctx.jobInput({ name: "Canceled", retries: 2 }), null);
+  const cancelRun = ctx.runner.trigger(canceled, "manual");
+  assert.ok("run" in cancelRun);
+  const finished = waitForFinish(ctx.runner, cancelRun.run.id);
+  ctx.runner.cancel(cancelRun.run.id);
+  assert.equal((await finished).status, "canceled");
+
+  for (const job of [checked, none, canceled]) assert.equal(ctx.store.listRuns({ jobId: job.id }).length, 1, job.name);
+});
+
+test("runs interrupted by a server stop are retried", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const job = ctx.store.createJob(ctx.jobInput({ retries: 1 }), null);
+  const run = ctx.store.createRun(job.id, "schedule", "pi", null);
+  ctx.store.updateRun(run.id, { status: "running" });
+  const [interrupted] = ctx.store.failInterruptedRuns();
+  assert.equal(interrupted?.id, run.id);
+  assert.equal(ctx.runner.retry(interrupted)?.retryOf, run.id);
+  assert.equal(ctx.runner.retry({ ...interrupted, attempt: 2 }), null, "the job allows one retry");
+});
+
+test("a missed scheduled fire runs only when the job catches up", (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const on = ctx.store.createJob(ctx.jobInput({ name: "On", schedule: "0 6 * * *" }), null);
+  const off = ctx.store.createJob(ctx.jobInput({ name: "Off", schedule: "0 6 * * *", catchUp: false }), null);
+  assert.deepEqual(ctx.runner.fireSchedule(off, true), { skipped: "its time was missed and catch-up is off" });
+  assert.ok(ctx.store.getJob(off.id)?.lastFiredAt, "a skipped fire still counts as handled");
+  const caught = ctx.runner.fireSchedule(on, true);
+  assert.ok("run" in caught);
+  assert.equal(caught.run.trigger, "schedule");
+  ctx.runner.cancel(caught.run.id);
+});

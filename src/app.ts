@@ -9,7 +9,7 @@ import type { Config } from "./config.ts";
 import { QueueFullError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
-import { ACTIVE_STATUSES, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
+import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
 
 /** Bumped on incompatible API changes; clients check it through /api/health. */
 export const API_VERSION = 1;
@@ -159,7 +159,7 @@ export function createApp(deps: AppDeps) {
       async (req, [id]) => {
         const existing = findJob(id);
         const body = await readJson(req);
-        const input = await validateJob(body);
+        const input = await validateJob(body, existing);
         const token =
           body.webhookEnabled === undefined
             ? existing.webhookToken
@@ -374,7 +374,8 @@ export function createApp(deps: AppDeps) {
   };
 }
 
-async function validateJob(body: Record<string, unknown>): Promise<JobInput> {
+/** Builds a job from a request body; for an update, omitted catch-up and retry settings keep their values. */
+async function validateJob(body: Record<string, unknown>, existing: Job | null = null): Promise<JobInput> {
   const fields: Record<string, string> = {};
   const text = (key: string) => (typeof body[key] === "string" ? (body[key] as string).trim() : "");
 
@@ -406,6 +407,11 @@ async function validateJob(body: Record<string, unknown>): Promise<JobInput> {
     fields.timeoutMinutes = "Use a whole number of minutes from 1 to 1440";
   }
 
+  const retries = Number(body.retries ?? existing?.retries ?? DEFAULT_RETRIES);
+  if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {
+    fields.retries = `Use a whole number from 0 to ${MAX_RETRIES}`;
+  }
+
   if (Object.keys(fields).length > 0) throw new HttpError(400, "Fix the highlighted fields", fields);
   return {
     name,
@@ -417,6 +423,8 @@ async function validateJob(body: Record<string, unknown>): Promise<JobInput> {
     timeoutMinutes,
     checkCommand: text("checkCommand") || null,
     pushBranch: body.pushBranch === true,
+    catchUp: typeof body.catchUp === "boolean" ? body.catchUp : (existing?.catchUp ?? true),
+    retries,
     enabled: body.enabled !== false,
   };
 }

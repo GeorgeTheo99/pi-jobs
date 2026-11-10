@@ -13,6 +13,11 @@ export interface Run {
   status: RunStatus;
   agent: AgentId;
   payload: string | null;
+  /** 1 for the first try; retries count up from there. */
+  attempt: number;
+  retryOf: number | null;
+  /** A queued retry waits until this time. */
+  notBefore: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -39,7 +44,10 @@ export interface Job {
   timeoutMinutes: number;
   checkCommand: string | null;
   pushBranch: boolean;
+  catchUp: boolean;
+  retries: number;
   enabled: boolean;
+  lastFiredAt: string | null;
   createdAt: string;
   updatedAt: string;
   effectiveAgent: AgentId;
@@ -59,6 +67,8 @@ export interface JobDraft {
   timeoutMinutes: number;
   checkCommand: string;
   pushBranch: boolean;
+  catchUp: boolean;
+  retries: number;
   enabled: boolean;
 }
 
@@ -169,6 +179,8 @@ export function jobToDraft(job: Job): JobDraft {
     timeoutMinutes: job.timeoutMinutes,
     checkCommand: job.checkCommand ?? "",
     pushBranch: job.pushBranch,
+    catchUp: job.catchUp,
+    retries: job.retries,
     enabled: job.enabled,
   };
 }

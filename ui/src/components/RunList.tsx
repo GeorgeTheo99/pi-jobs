@@ -29,6 +29,7 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
               <div className="truncate text-[12px] text-fog">
                 {jobNames && `${TRIGGER_LABELS[run.trigger]} · `}
                 {AGENT_LABELS[run.agent]} · {relativeTime(run.createdAt, now)}
+                {run.attempt > 1 && ` · attempt ${run.attempt}`}
                 {compact && (run.commits ?? 0) > 0 && <span className="text-bone"> · +{run.commits}</span>}
               </div>
             </div>

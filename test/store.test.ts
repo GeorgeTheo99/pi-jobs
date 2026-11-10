@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store.ts";
 
-test("opening a database from before push_branch/pushed_to adds the columns", (t) => {
+test("opening a database from before push_branch/pushed_to and catch-up/retries adds the columns", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "pi-jobs-store-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "old.db");
@@ -24,7 +24,13 @@ test("opening a database from before push_branch/pushed_to adds the columns", (t
   const store = new Store(file);
   t.after(() => store.close());
   assert.equal(store.getJob(1)?.pushBranch, false);
-  assert.equal(store.createRun(1, "manual", "pi", null).pushedTo, null);
+  assert.equal(store.getJob(1)?.catchUp, true);
+  assert.equal(store.getJob(1)?.retries, 2);
+  assert.equal(store.getJob(1)?.lastFiredAt, null);
+  const run = store.createRun(1, "manual", "pi", null);
+  assert.equal(run.pushedTo, null);
+  assert.equal(run.attempt, 1);
+  assert.equal(run.retryOf, null);
 });
 
 test("tokens are stored hashed and authenticate by secret", (t) => {

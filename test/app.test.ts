@@ -65,13 +65,27 @@ test("jobs can be created, listed, updated and deleted", async (t) => {
   assert.equal(created.json.effectiveAgent, "pi");
   assert.ok(created.json.nextRunAt);
   assert.match(created.json.webhookToken, /^[\w-]{32}$/);
+  assert.equal(created.json.catchUp, true, "catch-up is on by default");
+  assert.equal(created.json.retries, 2, "failed runs retry twice by default");
 
   const list = await app.call("GET", "/api/jobs");
   assert.equal(list.json.length, 1);
 
-  const updated = await app.call("PUT", `/api/jobs/${created.json.id}`, { ...created.json, agent: "codex", enabled: false });
+  const updated = await app.call("PUT", `/api/jobs/${created.json.id}`, {
+    ...created.json,
+    agent: "codex",
+    enabled: false,
+    catchUp: false,
+    retries: 0,
+  });
   assert.equal(updated.status, 200, JSON.stringify(updated.json));
   assert.equal(updated.json.effectiveAgent, "codex");
+  assert.equal(updated.json.catchUp, false);
+  assert.equal(updated.json.retries, 0);
+  const { catchUp: _catchUp, retries: _retries, ...older } = updated.json;
+  const fromOlderClient = await app.call("PUT", `/api/jobs/${created.json.id}`, older);
+  assert.equal(fromOlderClient.json.catchUp, false, "clients that don't send catch-up keep it");
+  assert.equal(fromOlderClient.json.retries, 0);
   assert.equal(updated.json.nextRunAt, null, "paused jobs are unscheduled");
   assert.equal(updated.json.webhookToken, created.json.webhookToken, "the token survives edits");
 
@@ -89,9 +103,18 @@ test("job validation reports each bad field", async (t) => {
     agent: "gpt",
     schedule: "every tuesday",
     timeoutMinutes: 0,
+    retries: 9,
   });
   assert.equal(res.status, 400);
-  assert.deepEqual(Object.keys(res.json.fields).sort(), ["agent", "name", "prompt", "repoPath", "schedule", "timeoutMinutes"]);
+  assert.deepEqual(Object.keys(res.json.fields).sort(), [
+    "agent",
+    "name",
+    "prompt",
+    "repoPath",
+    "retries",
+    "schedule",
+    "timeoutMinutes",
+  ]);
 
   const badRef = await app.call("POST", "/api/jobs", { name: "x", repoPath: app.repo, baseRef: "nope", prompt: "y" });
   assert.deepEqual(Object.keys(badRef.json.fields), ["baseRef"]);

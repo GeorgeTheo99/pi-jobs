@@ -29,6 +29,8 @@ const EMPTY_DRAFT: JobDraft = {
   timeoutMinutes: 30,
   checkCommand: "",
   pushBranch: false,
+  catchUp: true,
+  retries: 2,
   enabled: true,
 };
 
@@ -202,6 +204,14 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
 
           <Section title="Triggers">
             <ScheduleField value={draft.schedule} error={fields.schedule} onChange={(v) => set("schedule", v)} />
+            {draft.schedule.trim() && (
+              <ToggleRow
+                label="Catch up missed runs"
+                hint="If the server was off or the Mac asleep at a scheduled time, run once when it is back. Several missed times run once."
+                checked={draft.catchUp}
+                onChange={(v) => set("catchUp", v)}
+              />
+            )}
             <div className="grid gap-3">
               <ToggleRow
                 label="Trigger from a webhook"
@@ -214,7 +224,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
           </Section>
 
           <Section title="Limits and checks">
-            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_140px_140px]">
               <Field label="Check command" error={fields.checkCommand} hint="Optional. Runs in the worktree after the agent; a non-zero exit fails the run.">
                 {(p) => (
                   <input
@@ -241,7 +251,24 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                   />
                 )}
               </Field>
+              <Field label="Retries" error={fields.retries}>
+                {(p) => (
+                  <input
+                    {...p}
+                    type="number"
+                    min={0}
+                    max={5}
+                    className="field tabular-nums"
+                    value={draft.retries}
+                    onChange={(e) => set("retries", Number(e.target.value))}
+                  />
+                )}
+              </Field>
             </div>
+            <p className="-mt-2 text-[12px] leading-snug text-fog">
+              A run that fails or times out is tried again after 1 minute, then 4, 16 and so on. Canceled runs and failed checks or
+              pushes are not retried.
+            </p>
             <ToggleRow
               label="Push the result branch"
               hint="After a successful run with changes, push its branch to the repository's origin so any machine can fetch it. If origin is GitHub, the branch becomes visible there."

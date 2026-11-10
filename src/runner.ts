@@ -17,6 +17,8 @@ const PAYLOAD_TOKEN = "{{payload}}";
 /** The remote runs start from and push result branches to. */
 const REMOTE = "origin";
 const NETWORK_TIMEOUT_MS = 120_000;
+/** The wait before the first retry; each further retry waits 4x longer. */
+const RETRY_DELAY_MS = 60_000;
 /** Session-scoped variables that leak in when the server is started from inside an agent session. */
 const SESSION_ENV = [
   "PI_SESSION_FILE",
@@ -51,6 +53,7 @@ export interface RunnerOptions {
   stateDir: string;
   env?: NodeJS.ProcessEnv;
   killGraceMs?: number;
+  retryDelayMs?: number;
 }
 
 export function slugify(name: string): string {
@@ -90,9 +93,12 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   private readonly store: Store;
   private readonly env: NodeJS.ProcessEnv;
   private readonly killGraceMs: number;
+  private readonly retryDelayMs: number;
   private readonly active = new Map<number, ActiveRun>();
   private readonly executions = new Set<Promise<void>>();
   private stopping = false;
+  /** Pumps again when the earliest waiting retry comes due. */
+  private wakeTimer: NodeJS.Timeout | null = null;
   readonly logDir: string;
   readonly worktreeDir: string;
 
@@ -103,6 +109,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       Object.entries(options.env ?? process.env).filter(([key]) => !SESSION_ENV.includes(key)),
     );
     this.killGraceMs = options.killGraceMs ?? 10_000;
+    this.retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
     this.logDir = path.join(options.stateDir, "runs");
     this.worktreeDir = path.join(options.stateDir, "worktrees");
     mkdirSync(this.logDir, { recursive: true });
@@ -127,6 +134,25 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     return { run: this.store.getRun(run.id)! };
   }
 
+  /** A cron fire. A missed one (slept through, or due while the server was down) runs only if the job catches up. */
+  fireSchedule(job: Job, missed: boolean): TriggerResult {
+    this.store.markFired(job.id);
+    if (missed && !job.catchUp) return { skipped: "its time was missed and catch-up is off" };
+    return this.trigger(job, "schedule");
+  }
+
+  /** Queues another attempt of a failed run, with backoff, while its job allows more. */
+  retry(run: Run): Run | null {
+    const job = this.store.getJob(run.jobId);
+    if (!job?.enabled || run.attempt > job.retries) return null;
+    const notBefore = new Date(Date.now() + this.retryDelayMs * 4 ** (run.attempt - 1));
+    const next = this.store.createRetry(run, notBefore);
+    const attempt = `attempt ${next.attempt} of ${job.retries + 1}`;
+    this.note(run.id, `Retrying as run #${next.id} after ${notBefore.toISOString()} (${attempt})`);
+    this.note(next.id, `Queued (retry of run #${run.id}, ${attempt}, agent: ${next.agent}); starts after ${notBefore.toISOString()}`);
+    return next;
+  }
+
   cancel(runId: number): Run | null {
     const run = this.store.getRun(runId);
     if (!run) return null;
@@ -142,14 +168,27 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     return this.active.has(runId);
   }
 
-  /** Starts queued runs while slots are free, one run per job at a time. */
+  /** Starts queued runs while slots are free, one run per job at a time; retries wait for their time. */
   pump(): void {
     if (this.stopping) return;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = null;
     const { maxConcurrent } = this.store.getSettings();
+    let wakeAt = Infinity;
     for (const run of this.store.queuedRuns()) {
-      if (this.active.size >= maxConcurrent) return;
+      const notBefore = run.notBefore ? Date.parse(run.notBefore) : 0;
+      if (notBefore > Date.now()) {
+        wakeAt = Math.min(wakeAt, notBefore);
+        continue;
+      }
+      if (this.active.size >= maxConcurrent) break;
       if ([...this.active.values()].some((a) => a.jobId === run.jobId)) continue;
       this.start(run);
+    }
+    if (wakeAt !== Infinity) {
+      // Re-check at least every minute: timers don't advance while the Mac sleeps, but the clock does.
+      this.wakeTimer = setTimeout(() => this.pump(), Math.min(wakeAt - Date.now(), 60_000));
+      this.wakeTimer.unref();
     }
   }
 
@@ -157,6 +196,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   async shutdown(): Promise<void> {
     // Queued runs stay queued for the next start instead of starting mid-shutdown.
     this.stopping = true;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     for (const active of this.active.values()) active.stop("interrupted");
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
@@ -272,20 +312,30 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       } else {
         this.note(run.id, `Kept the worktree for inspection: ${worktree}`);
       }
-      this.finish(run.id, {
-        status,
-        branch,
-        worktree,
-        headCommit,
-        commits,
-        checkStatus,
-        pushedTo,
-        error: active.stopReason === "interrupted" ? "The server stopped while this run was in progress" : pushError,
-      });
+      // A failed check or push means the agent finished its work; running it again would redo that.
+      const retryable = status === "timed_out" || (status === "failed" && checkStatus !== "failed" && !pushError);
+      this.finish(
+        run.id,
+        {
+          status,
+          branch,
+          worktree,
+          headCommit,
+          commits,
+          checkStatus,
+          pushedTo,
+          error: active.stopReason === "interrupted" ? "The server stopped while this run was in progress" : pushError,
+        },
+        retryable,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.note(run.id, `Error: ${message}`);
-      this.finish(run.id, { status: "failed", error: message.split("\n")[0] ?? message, branch, worktree, baseCommit });
+      this.finish(
+        run.id,
+        { status: "failed", error: message.split("\n")[0] ?? message, branch, worktree, baseCommit },
+        active.stopReason !== "canceled",
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -414,9 +464,10 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     active.killTimer.unref();
   }
 
-  private finish(runId: number, patch: Parameters<Store["updateRun"]>[1]): Run {
+  private finish(runId: number, patch: Parameters<Store["updateRun"]>[1], retryable = false): Run {
     const run = this.store.updateRun(runId, { ...patch, finishedAt: new Date().toISOString() });
     this.note(runId, `Finished: ${run.status}`);
+    if (retryable) this.retry(run);
     this.emit("finished", run);
     return run;
   }

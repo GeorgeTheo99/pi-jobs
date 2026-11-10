@@ -21,6 +21,10 @@ export interface JobInput {
   checkCommand: string | null;
   /** Push a succeeded run's branch to the repo's `origin` remote. */
   pushBranch: boolean;
+  /** Run once after scheduled fires were missed while the server was down or asleep. */
+  catchUp: boolean;
+  /** Times a failed or timed-out run is retried. */
+  retries: number;
   enabled: boolean;
 }
 
@@ -28,6 +32,8 @@ export interface Job extends JobInput {
   id: number;
   /** Null means the webhook trigger is off. */
   webhookToken: string | null;
+  /** When the schedule last fired (or a missed fire was handled). */
+  lastFiredAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -39,6 +45,12 @@ export interface Run {
   status: RunStatus;
   agent: AgentId;
   payload: string | null;
+  /** 1 for the first try; retries count up from there. */
+  attempt: number;
+  /** The run this one retries. */
+  retryOf: number | null;
+  /** A queued retry waits until this time. */
+  notBefore: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -54,7 +66,12 @@ export interface Run {
   finishedAt: string | null;
 }
 
-export type RunPatch = Partial<Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "createdAt">>;
+export type RunPatch = Partial<
+  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "createdAt">
+>;
+
+export const DEFAULT_RETRIES = 2;
+export const MAX_RETRIES = 5;
 
 export interface Settings {
   defaultAgent: AgentId;
@@ -123,6 +140,12 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "push_branch", "INTEGER NOT NULL DEFAULT 0"],
   ["runs", "pushed_to", "TEXT"],
+  ["jobs", "catch_up", "INTEGER NOT NULL DEFAULT 1"],
+  ["jobs", "retries", `INTEGER NOT NULL DEFAULT ${DEFAULT_RETRIES}`],
+  ["jobs", "last_fired_at", "TEXT"],
+  ["runs", "attempt", "INTEGER NOT NULL DEFAULT 1"],
+  ["runs", "retry_of", "INTEGER"],
+  ["runs", "not_before", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -166,7 +189,10 @@ function toJob(row: Row): Job {
     timeoutMinutes: Number(row.timeout_minutes),
     checkCommand: (row.check_command as string | null) ?? null,
     pushBranch: row.push_branch === 1,
+    catchUp: row.catch_up === 1,
+    retries: Number(row.retries),
     enabled: row.enabled === 1,
+    lastFiredAt: (row.last_fired_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -181,6 +207,9 @@ function toRun(row: Row): Run {
     status: row.status as RunStatus,
     agent: row.agent as AgentId,
     payload: row.payload as string | null,
+    attempt: Number(row.attempt),
+    retryOf: num(row.retry_of),
+    notBefore: (row.not_before as string | null) ?? null,
     branch: row.branch as string | null,
     worktree: row.worktree as string | null,
     baseCommit: row.base_commit as string | null,
@@ -228,8 +257,8 @@ export class Store {
     const result = this.db
       .prepare(
         `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
-           timeout_minutes, check_command, push_branch, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           timeout_minutes, check_command, push_branch, catch_up, retries, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -242,6 +271,8 @@ export class Store {
         input.timeoutMinutes,
         input.checkCommand,
         input.pushBranch ? 1 : 0,
+        input.catchUp ? 1 : 0,
+        input.retries,
         input.enabled ? 1 : 0,
         ts,
         ts,
@@ -253,7 +284,8 @@ export class Store {
     this.db
       .prepare(
         `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
-           webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, enabled = ?, updated_at = ?
+           webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
+           enabled = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -267,11 +299,17 @@ export class Store {
         input.timeoutMinutes,
         input.checkCommand,
         input.pushBranch ? 1 : 0,
+        input.catchUp ? 1 : 0,
+        input.retries,
         input.enabled ? 1 : 0,
         now(),
         id,
       );
     return this.getJob(id);
+  }
+
+  markFired(id: number): void {
+    this.db.prepare("UPDATE jobs SET last_fired_at = ? WHERE id = ?").run(now(), id);
   }
 
   deleteJob(id: number): void {
@@ -282,6 +320,17 @@ export class Store {
     const result = this.db
       .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, created_at) VALUES (?, ?, 'queued', ?, ?, ?)")
       .run(jobId, trigger, agent, payload, now());
+    return this.getRun(Number(result.lastInsertRowid))!;
+  }
+
+  /** Queues another attempt of a finished run that may start at `notBefore`. */
+  createRetry(of: Run, notBefore: Date): Run {
+    const result = this.db
+      .prepare(
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, attempt, retry_of, not_before, created_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(of.jobId, of.trigger, of.agent, of.payload, of.attempt + 1, of.id, notBefore.toISOString(), now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
@@ -339,12 +388,12 @@ export class Store {
     return this.getRun(id)!;
   }
 
-  /** Runs that were mid-flight when the server stopped cannot be resumed. */
-  failInterruptedRuns(): number {
-    const result = this.db
-      .prepare("UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running'")
-      .run("The server stopped while this run was in progress", now());
-    return Number(result.changes);
+  /** Runs that were mid-flight when the server stopped cannot be resumed; returns them, now failed. */
+  failInterruptedRuns(): Run[] {
+    return this.db
+      .prepare("UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running' RETURNING *")
+      .all("The server stopped while this run was in progress", now())
+      .map((r) => toRun(r as Row));
   }
 
   listTokens(): ApiToken[] {

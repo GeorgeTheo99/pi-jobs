@@ -25,7 +25,7 @@ export function setup() {
   const root = mkdtempSync(path.join(os.tmpdir(), "pi-jobs-test-"));
   const repo = makeRepo(root);
   const store = new Store(path.join(root, "state", "pi-jobs.db"));
-  const runner = new Runner({ store, stateDir: path.join(root, "state"), killGraceMs: 500 });
+  const runner = new Runner({ store, stateDir: path.join(root, "state"), killGraceMs: 500, retryDelayMs: 100 });
   const useFakeAgent = (mode: string) => {
     const settings = store.getSettings();
     settings.agents.pi.command = `${process.execPath} ${FAKE_AGENT} ${mode} {prompt}`;
@@ -41,6 +41,8 @@ export function setup() {
     timeoutMinutes: 5,
     checkCommand: null,
     pushBranch: false,
+    catchUp: true,
+    retries: 0,
     enabled: true,
     ...overrides,
   });

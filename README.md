@@ -64,12 +64,18 @@ yourself.
 
 | Trigger | Notes |
 |---|---|
-| Schedule | Cron, in the server's local time zone. A fire is skipped while a run of the same job is queued or running. Fires missed while the server is down are not caught up |
+| Schedule | Cron, in the server's local time zone. A fire is skipped while a run of the same job is queued or running. With **Catch up missed runs** (on by default), times missed while the server was down or the Mac asleep run once when it is back; off, they are skipped |
 | Webhook | `POST /api/hooks/<job id>` with `Authorization: Bearer <token>` (or `?token=`). The body becomes the payload: it replaces `{{payload}}` in the instructions, or is appended. Up to 20 queued runs per job |
 | Manual | **Run now** in the UI, or `POST /api/jobs/<id>/run` |
 
 Paused jobs ignore their schedule and webhook. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
+
+A run that fails or times out is retried up to the job's **Retries** (default 2, at most 5) as a new
+run with the same trigger and payload, after 1 minute, then 4, 16 and so on. That includes runs the
+server stopped mid-way. Canceled runs, failed checks and failed pushes are not retried: the agent
+already did its work. A waiting retry counts as queued, so it holds back the job's schedule and can
+be canceled.
 
 ```sh
 curl -X POST http://127.0.0.1:8790/api/hooks/1 \
@@ -169,7 +175,7 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 
 State lives in `~/.local/state/pi-jobs/`: `pi-jobs.db` (SQLite: jobs, runs, settings, token hashes),
 `runs/<id>.log`, and `worktrees/` for kept worktrees. Restarting the server fails runs that were
-in progress. Queued runs resume.
+in progress (and retries them if their job allows). Queued runs resume.
 
 | Variable | Default |
 |---|---|
@@ -190,5 +196,5 @@ Vite and Tailwind 4 in a dark navy and amber theme.
 | `npm --prefix ui run dev` | Vite dev server, proxying `/api` to :8790 |
 | `npm run check` | Typecheck, server tests, UI lint and tests, UI build |
 
-Not built yet: merging or promoting result branches, notifications, catching up on schedule
-fires missed while the server was down, and taking over a run interactively.
+Not built yet: merging or promoting result branches, notifications, and taking over a run
+interactively.

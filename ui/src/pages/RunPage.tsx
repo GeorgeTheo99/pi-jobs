@@ -70,9 +70,23 @@ export function RunPage() {
       <div className="grid gap-6">
         <ErrorNote error={cancelError ?? run.error} />
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-[14px] border border-steel/40 bg-inkwell/40 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Meta label="Trigger">{TRIGGER_LABELS[run.trigger]}</Meta>
+          <Meta label="Trigger">
+            {TRIGGER_LABELS[run.trigger]}
+            {run.retryOf !== null && (
+              <>
+                {" · "}
+                <Link to={`/runs/${run.retryOf}`} className="text-fog hover:text-bone">
+                  retry of #{run.retryOf}
+                </Link>
+              </>
+            )}
+          </Meta>
           <Meta label="Agent">{AGENT_LABELS[run.agent]}</Meta>
-          <Meta label="Started">{run.startedAt ? dateTime(run.startedAt) : "Waiting for a slot"}</Meta>
+          <Meta label="Started">{run.startedAt
+              ? dateTime(run.startedAt)
+              : run.status === "queued" && run.notBefore && Date.parse(run.notBefore) > now
+                ? `Retry at ${dateTime(run.notBefore)}`
+                : "Waiting for a slot"}</Meta>
           <Meta label="Duration">
             <span className="tabular-nums">{duration(run.startedAt, run.finishedAt, now)}</span>
           </Meta>

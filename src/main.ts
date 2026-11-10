@@ -11,19 +11,25 @@ const store = new Store(path.join(config.stateDir, "pi-jobs.db"));
 const runner = new Runner({ store, stateDir: config.stateDir });
 
 const interrupted = store.failInterruptedRuns();
-if (interrupted > 0) console.warn(`Marked ${interrupted} interrupted run(s) as failed`);
+if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
+for (const run of interrupted) runner.retry(run);
 
-const scheduler = new Scheduler((jobId) => {
+const fireSchedule = (jobId: number, missed: boolean) => {
   const job = store.getJob(jobId);
   if (!job) return;
   try {
-    const result = runner.trigger(job, "schedule");
+    const result = runner.fireSchedule(job, missed);
     if ("skipped" in result) console.log(`Skipped scheduled run of "${job.name}": ${result.skipped}`);
+    else if (missed) console.log(`Caught up a missed scheduled run of "${job.name}" (run #${result.run.id})`);
   } catch (error) {
     console.error(`Scheduled run of "${job.name}" failed to queue:`, error);
   }
-});
-for (const job of store.listJobs()) scheduler.sync(job);
+};
+const scheduler = new Scheduler(fireSchedule);
+for (const job of store.listJobs()) {
+  scheduler.sync(job);
+  if (scheduler.missed(job)) fireSchedule(job.id, true);
+}
 runner.pump();
 
 const handle = createApp({ config, store, runner, scheduler });
