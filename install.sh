@@ -3,8 +3,9 @@
 # 127.0.0.1:8790, links the pi-jobs CLI into ~/.local/bin, and points this machine's Pi tools at
 # the local server. Safe to re-run after pulling changes.
 #
-#   PI_JOBS_ALLOWED_HOSTS  extra Host names for a reverse proxy (comma-separated); when unset, the
-#                          value of an existing install is kept
+#   PI_JOBS_ALLOWED_HOSTS  extra Host names for a reverse proxy (comma-separated)
+#   PI_JOBS_STATE_DIR      state directory (default ~/.local/state/pi-jobs)
+#                          When unset, both keep the value of an existing install.
 #   PI_JOBS_SKIP_BUILD=1   reuse existing node_modules and ui/dist
 #   PI_JOBS_NO_CLIENT=1    leave ~/.config/pi-jobs/client.json alone
 #
@@ -15,8 +16,15 @@ repo=$(cd "$(dirname "$0")" && pwd)
 label=com.local.pi-jobs
 domain="gui/$(id -u)"
 plist="$HOME/Library/LaunchAgents/$label.plist"
-state="${PI_JOBS_STATE_DIR:-$HOME/.local/state/pi-jobs}"
 port=8790
+
+# Keep a previous install's settings unless new ones are given.
+saved() {
+    [ -f "$plist" ] && /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$plist" 2>/dev/null || true
+}
+[ -n "${PI_JOBS_STATE_DIR:-}" ] || PI_JOBS_STATE_DIR=$(saved PI_JOBS_STATE_DIR)
+state="${PI_JOBS_STATE_DIR:-$HOME/.local/state/pi-jobs}"
+[ -n "${PI_JOBS_ALLOWED_HOSTS+set}" ] || PI_JOBS_ALLOWED_HOSTS=$(saved PI_JOBS_ALLOWED_HOSTS)
 
 [ "$(uname -s)" = Darwin ] || { echo "pi-jobs install.sh supports macOS (launchd) only" >&2; exit 1; }
 node=$(command -v node) || { echo "pi-jobs needs Node 24 or newer on PATH" >&2; exit 1; }
@@ -30,10 +38,6 @@ if [ "${PI_JOBS_SKIP_BUILD:-}" != 1 ]; then
 fi
 [ -f "$repo/ui/dist/index.html" ] || { echo "The UI build is missing: $repo/ui/dist" >&2; exit 1; }
 
-# Keep a previous install's proxy host names unless new ones are given.
-if [ -z "${PI_JOBS_ALLOWED_HOSTS+set}" ] && [ -f "$plist" ]; then
-    PI_JOBS_ALLOWED_HOSTS=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PI_JOBS_ALLOWED_HOSTS" "$plist" 2>/dev/null || true)
-fi
 allowed_hosts=${PI_JOBS_ALLOWED_HOSTS:-}
 case "$allowed_hosts" in *[!A-Za-z0-9.,:\[\]-]*) echo "PI_JOBS_ALLOWED_HOSTS may hold only host names, IPs and commas" >&2; exit 1 ;; esac
 # launchd's default PATH lacks Homebrew and ~/.local/bin, where the agent CLIs live.
