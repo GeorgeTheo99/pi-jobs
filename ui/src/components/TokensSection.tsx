@@ -12,20 +12,22 @@ export function TokensSection() {
   const tokens = usePoll(api.tokens, null);
   const session = usePoll(api.session, null);
   const [name, setName] = useState("");
-  const [fieldError, setFieldError] = useState<string | undefined>();
+  const [value, setValue] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ token: ApiToken; secret: string } | null>(null);
 
   const create = async (event: FormEvent) => {
     event.preventDefault();
-    setFieldError(undefined);
+    setFieldErrors({});
     setError(null);
     try {
-      setCreated(await api.createToken(name.trim()));
+      setCreated(await api.createToken(name.trim(), value));
       setName("");
+      setValue("");
       await tokens.refresh();
     } catch (err) {
-      if (err instanceof ApiError && err.fields.name) setFieldError(err.fields.name);
+      if (err instanceof ApiError && (err.fields.name || err.fields.token)) setFieldErrors(err.fields);
       else setError((err as Error).message);
     }
   };
@@ -106,9 +108,30 @@ export function TokensSection() {
       )}
 
       <form onSubmit={(e) => void create(e)} className="flex flex-wrap items-start gap-2" noValidate>
-        <div className="min-w-[220px] flex-1">
-          <Field label="New token name" error={fieldError} hint="For example macbook-pro or iphone.">
+        <div className="min-w-[180px] flex-1">
+          <Field label="New token name" error={fieldErrors.name} hint="For example macbook-pro or iphone.">
             {(p) => <input {...p} className="field" value={name} onChange={(e) => setName(e.target.value)} autoCapitalize="off" />}
+          </Field>
+        </div>
+        <div className="min-w-[220px] flex-[1.4]">
+          <Field
+            label="Token (optional)"
+            error={fieldErrors.token}
+            hint="Leave empty to generate one, or set your own: pjt_ followed by 20 to 200 letters, digits, - or _."
+          >
+            {(p) => (
+              <input
+                {...p}
+                type="password"
+                className="field font-mono text-[13px]"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                autoComplete="new-password"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="pjt_…"
+              />
+            )}
           </Field>
         </div>
         <button type="submit" className="btn btn-ghost mt-[26px]" disabled={!name.trim()}>

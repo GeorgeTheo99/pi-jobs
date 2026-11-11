@@ -145,7 +145,9 @@ export const api = {
   /** Checks a token without storing it. */
   session: (token?: string) => request<{ token: ApiToken }>("GET", "/api/session", undefined, token ?? tokenStore.get()),
   tokens: () => request<ApiToken[]>("GET", "/api/tokens"),
-  createToken: (name: string) => request<{ token: ApiToken; secret: string }>("POST", "/api/tokens", { name }),
+  /** `token` is optional: an owner-chosen token instead of a generated one. */
+  createToken: (name: string, token?: string) =>
+    request<{ token: ApiToken; secret: string }>("POST", "/api/tokens", token ? { name, token } : { name }),
   deleteToken: (id: number) => request<{ ok: true }>("DELETE", `/api/tokens/${id}`),
   jobs: () => request<Job[]>("GET", "/api/jobs"),
   job: (id: number) => request<Job>("GET", `/api/jobs/${id}`),

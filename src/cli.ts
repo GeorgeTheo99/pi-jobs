@@ -7,13 +7,16 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { loadConfig } from "./config.ts";
-import { Store } from "./store.ts";
+import { Store, TOKEN_PATTERN, TOKEN_RULE } from "./store.ts";
 
 /** Where Pi's pi-jobs tools look for their server URL and token. */
 export const CLIENT_CONFIG = path.join(os.homedir(), ".config", "pi-jobs", "client.json");
 
 const USAGE = `Usage:
-  pi-jobs token create <name> [--client-config]   Create a token and print it once.
+  pi-jobs token create <name> [--set] [--client-config]
+                                                  Create a token and print it once.
+                                                  --set uses a token you choose instead, read
+                                                  from stdin (prompts twice on a terminal).
                                                   --client-config also saves it with this
                                                   server's URL to ${CLIENT_CONFIG}
   pi-jobs token list
@@ -145,7 +148,7 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     const token = await readSecret("pi-jobs API token: ");
-    if (!/^pjt_[\w-]{20,}$/.test(token)) {
+    if (!TOKEN_PATTERN.test(token)) {
       console.error("That doesn't look like a pi-jobs token (pjt_…)");
       return 1;
     }
@@ -170,9 +173,25 @@ async function main(argv: string[]): Promise<number> {
         console.error(`A token named "${name}" exists`);
         return 1;
       }
-      const { secret } = store.createToken(name);
+      const chosen = rest.includes("--set") ? await readSecret("New token: ") : undefined;
+      if (chosen !== undefined) {
+        if (!TOKEN_PATTERN.test(chosen)) {
+          console.error(TOKEN_RULE);
+          return 1;
+        }
+        if (process.stdin.isTTY && (await readSecret("Repeat it: ")) !== chosen) {
+          console.error("The tokens don't match");
+          return 1;
+        }
+        if (store.tokenInUse(chosen)) {
+          console.error("That token is already in use");
+          return 1;
+        }
+      }
+      const { secret } = store.createToken(name, chosen);
       if (rest.includes("--client-config")) writeClientConfig(`http://127.0.0.1:${config.port}`, secret);
-      else console.log(secret);
+      else if (chosen === undefined) console.log(secret);
+      else console.log(`Created "${name}" with the token you chose`);
       return 0;
     }
     if (sub === "revoke" && name) {

@@ -9,7 +9,7 @@ import type { Config } from "./config.ts";
 import { QueueFullError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
-import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
+import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
 
 /** Bumped on incompatible API changes; clients check it through /api/health. */
 export const API_VERSION = 1;
@@ -98,14 +98,21 @@ export function createApp(deps: AppDeps) {
       "POST",
       /^\/api\/tokens$/,
       async (req) => {
-        const name = String((await readJson(req)).name ?? "").trim();
-        if (!/^[\w .@-]{1,40}$/.test(name)) {
-          throw new HttpError(400, "Fix the highlighted fields", { name: "Use 1-40 letters, digits, spaces, or . @ - _" });
-        }
+        const body = await readJson(req);
+        const name = String(body.name ?? "").trim();
+        // Optional: the owner may choose the token itself; otherwise one is generated.
+        const secret = typeof body.token === "string" && body.token !== "" ? body.token : undefined;
+        const fields: Record<string, string> = {};
+        if (!/^[\w .@-]{1,40}$/.test(name)) fields.name = "Use 1-40 letters, digits, spaces, or . @ - _";
+        if (secret !== undefined && !TOKEN_PATTERN.test(secret)) fields.token = TOKEN_RULE;
+        if (Object.keys(fields).length > 0) throw new HttpError(400, "Fix the highlighted fields", fields);
         if (store.listTokens().some((t) => t.name === name)) {
           throw new HttpError(409, "A token with that name exists", { name: "Choose another name" });
         }
-        return store.createToken(name);
+        if (secret !== undefined && store.tokenInUse(secret)) {
+          throw new HttpError(409, "That token is already in use", { token: "Choose another token" });
+        }
+        return store.createToken(name, secret);
       },
     ],
     [

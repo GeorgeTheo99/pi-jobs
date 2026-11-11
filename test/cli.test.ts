@@ -44,6 +44,25 @@ test("token create prints a token once; list and revoke manage it", (t) => {
   assert.deepEqual(box.tokenNames(), []);
 });
 
+test("token create --set stores a token you choose and never prints it", (t) => {
+  const box = sandbox(t);
+  const chosen = `pjt_${"my-own-admin-key_".repeat(2)}`;
+  const created = box.run(["token", "create", "admin", "--set"], `${chosen}\n`);
+  assert.equal(created.status, 0, created.stderr);
+  assert.ok(!created.stdout.includes(chosen));
+  const store = new Store(path.join(box.home, "state", "pi-jobs.db"));
+  t.after(() => store.close());
+  assert.equal(store.authenticate(chosen)?.name, "admin");
+
+  const reused = box.run(["token", "create", "other", "--set"], `${chosen}\n`);
+  assert.equal(reused.status, 1);
+  assert.match(reused.stderr, /already in use/);
+  const bad = box.run(["token", "create", "weak", "--set"], "pjt_short\n");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /pjt_ followed by 20 to 200/);
+  assert.deepEqual(box.tokenNames(), ["admin"]);
+});
+
 test("connect-local mints one token and is idempotent", (t) => {
   const box = sandbox(t);
   assert.equal(box.run(["connect-local"]).status, 0);

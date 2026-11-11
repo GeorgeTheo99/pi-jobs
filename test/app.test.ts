@@ -248,9 +248,24 @@ test("tokens can be created, listed and revoked", async (t) => {
   assert.match(created.json.secret, /^pjt_[\w-]{43}$/);
   assert.equal((await app.call("POST", "/api/tokens", { name: "laptop" })).status, 409);
   assert.equal((await app.call("POST", "/api/tokens", { name: "" })).status, 400);
+
+  const chosen = `pjt_${"chosen-by-owner_".repeat(2)}`;
+  const own = await app.call("POST", "/api/tokens", { name: "admin", token: chosen });
+  assert.equal(own.status, 201, JSON.stringify(own.json));
+  assert.equal(own.json.secret, chosen);
+  assert.equal((await app.call("GET", "/api/jobs", undefined, { authorization: `Bearer ${chosen}` })).status, 200);
+  const reused = await app.call("POST", "/api/tokens", { name: "other", token: chosen });
+  assert.equal(reused.status, 409);
+  assert.deepEqual(Object.keys(reused.json.fields), ["token"]);
+  for (const bad of ["short", "pjt_short", `pjt_${"x".repeat(20)} with spaces`, "x".repeat(30)]) {
+    const res = await app.call("POST", "/api/tokens", { name: "bad", token: bad });
+    assert.equal(res.status, 400, bad);
+    assert.deepEqual(Object.keys(res.json.fields), ["token"]);
+  }
   const list = (await app.call("GET", "/api/tokens")).json;
-  assert.deepEqual(list.map((x: { name: string }) => x.name), ["test", "laptop"]);
+  assert.deepEqual(list.map((x: { name: string }) => x.name), ["test", "laptop", "admin"]);
   assert.ok(!JSON.stringify(list).includes(created.json.secret), "secrets are never listed");
+  assert.ok(!JSON.stringify(list).includes(chosen), "chosen secrets are never listed");
   const auth = { authorization: `Bearer ${created.json.secret}` };
   assert.equal((await app.call("GET", "/api/jobs", undefined, auth)).status, 200);
   assert.equal((await app.call("DELETE", `/api/tokens/${created.json.token.id}`, {})).status, 200);

@@ -169,6 +169,10 @@ const now = () => new Date().toISOString();
 
 const hashToken = (secret: string) => createHash("sha256").update(secret).digest("hex");
 
+/** Generated tokens and owner-chosen ones share this form, which every pi-jobs client accepts. */
+export const TOKEN_PATTERN = /^pjt_[A-Za-z0-9_-]{20,200}$/;
+export const TOKEN_RULE = "Use pjt_ followed by 20 to 200 letters, digits, - or _";
+
 export interface ApiToken {
   id: number;
   name: string;
@@ -411,13 +415,16 @@ export class Store {
       });
   }
 
-  /** Stores only the token's hash; returns the token, which is shown once. */
-  createToken(name: string): { token: ApiToken; secret: string } {
-    const secret = `pjt_${randomBytes(32).toString("base64url")}`;
+  /** Stores only the token's hash; returns the token (generated unless given), which is shown once. */
+  createToken(name: string, secret = `pjt_${randomBytes(32).toString("base64url")}`): { token: ApiToken; secret: string } {
     const result = this.db
       .prepare("INSERT INTO api_tokens (name, token_hash, created_at) VALUES (?, ?, ?)")
       .run(name, hashToken(secret), now());
     return { token: this.listTokens().find((t) => t.id === Number(result.lastInsertRowid))!, secret };
+  }
+
+  tokenInUse(secret: string): boolean {
+    return this.db.prepare("SELECT 1 FROM api_tokens WHERE token_hash = ?").get(hashToken(secret)) !== undefined;
   }
 
   deleteToken(id: number): boolean {
