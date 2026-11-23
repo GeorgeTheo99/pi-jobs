@@ -1,8 +1,8 @@
-import { Check, Square } from "lucide-react";
+import { Check, CornerDownRight, Square } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
-import { CopyButton, ErrorNote, PageHeader, Skeleton, StatusPill } from "@/components/ui";
-import { AGENT_LABELS, TRIGGER_LABELS, api, isActive, type Job, type Run } from "@/lib/api";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { CopyButton, ErrorNote, Field, PageHeader, Skeleton, StatusPill } from "@/components/ui";
+import { AGENT_LABELS, ApiError, TRIGGER_LABELS, api, isActive, type Job, type Run } from "@/lib/api";
 import { dateTime, duration, repoName, summarizePayload } from "@/lib/format";
 import { useNow, usePoll } from "@/lib/usePoll";
 
@@ -75,7 +75,13 @@ export function RunPage() {
         )}
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-[14px] border border-steel/40 bg-inkwell/40 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6">
           <Meta label="Trigger">
-            {TRIGGER_LABELS[run.trigger]}
+            {run.followUpOf !== null ? (
+              <Link to={`/runs/${run.followUpOf}`} className="hover:text-bone">
+                Follow-up of #{run.followUpOf}
+              </Link>
+            ) : (
+              TRIGGER_LABELS[run.trigger]
+            )}
             {run.retryOf !== null && (
               <>
                 {" · "}
@@ -108,7 +114,18 @@ export function RunPage() {
           </Meta>
         </dl>
 
+        {run.instructions !== null && (
+          <section className="grid gap-2">
+            <h2 className="section-label">Follow-up instructions</h2>
+            <p className="rounded-[12px] border border-steel/40 bg-inkwell/40 px-4 py-3 text-[14px] leading-relaxed whitespace-pre-wrap text-bone">
+              {run.instructions}
+            </p>
+          </section>
+        )}
+
         <Outcome run={run} job={job} />
+
+        {!isActive(run.status) && <FollowUp key={run.id} run={run} job={job} />}
 
         {run.payload && (
           <details className="group rounded-[12px] border border-steel/40">
@@ -201,6 +218,66 @@ function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | nul
           Approve and start
         </button>
       </div>
+    </section>
+  );
+}
+
+/** Starts a run that continues this one: from its result, with new instructions and this run as context. */
+function FollowUp({ run, job }: { run: Run; job: Job | null }) {
+  const navigate = useNavigate();
+  const [instructions, setInstructions] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<ApiError | Error | null>(null);
+  const start = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      const next = await api.followUp(run.id, instructions);
+      navigate(`/runs/${next.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+      setStarting(false);
+    }
+  };
+  const fieldError = error instanceof ApiError ? error.fields.instructions : undefined;
+  const from = (run.commits ?? 0) > 0 ? "this run's branch" : job ? job.baseRef : "the job's base branch";
+  return (
+    <section aria-labelledby="follow-up-title" className="grid gap-3 rounded-[14px] border border-steel/40 bg-inkwell/40 p-5">
+      <div className="grid gap-1">
+        <h2 id="follow-up-title" className="text-[15px] font-bold">
+          Follow up
+        </h2>
+        <p className="text-[13px] leading-relaxed text-fog">
+          Start a new run from {from} with new instructions, such as implementing what this run proposed. The agent also
+          gets this run's instructions{run.payload ? ", item" : ""} and final output. It never merges or deploys.
+        </p>
+      </div>
+      <form
+        className="grid gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void start();
+        }}
+      >
+        <Field label="Instructions" error={fieldError}>
+          {(p) => (
+            <textarea
+              {...p}
+              className="field min-h-[110px] resize-y leading-relaxed"
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              placeholder="Implement the proposal from this run, with tests."
+            />
+          )}
+        </Field>
+        {error && !fieldError && <ErrorNote error={error} />}
+        <div className="flex justify-end">
+          <button type="submit" className="btn btn-primary" disabled={starting || !instructions.trim()}>
+            <CornerDownRight aria-hidden className="size-3.5" />
+            {starting ? "Starting…" : "Start follow-up"}
+          </button>
+        </div>
+      </form>
     </section>
   );
 }

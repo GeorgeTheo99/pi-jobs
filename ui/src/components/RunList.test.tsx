@@ -13,6 +13,8 @@ const base: Run = {
   attempt: 1,
   retryOf: null,
   notBefore: null,
+  followUpOf: null,
+  instructions: null,
   branch: "pi-jobs/gateway-models/run-7",
   worktree: null,
   baseCommit: "abc",
@@ -69,4 +71,13 @@ test("names webhook and watch runs by their payload", () => {
   );
   expect(screen.getByText("Let me reorder scenes")).toBeTruthy();
   expect(screen.getByText(/Watch · Pi/)).toBeTruthy();
+});
+
+test("marks follow-ups with the run they continue", () => {
+  render(
+    <MemoryRouter>
+      <RunList runs={[{ ...base, id: 9, trigger: "manual", followUpOf: 7, instructions: "Implement it" }]} compact />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText(/follow-up of #7/)).toBeTruthy();
 });

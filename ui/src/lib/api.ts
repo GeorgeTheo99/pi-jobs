@@ -23,6 +23,10 @@ export interface Run {
   retryOf: number | null;
   /** A queued retry waits until this time. */
   notBefore: string | null;
+  /** The finished run this one follows up on, starting from its result. */
+  followUpOf: number | null;
+  /** A follow-up's instructions, which take the place of the job's. */
+  instructions: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -180,6 +184,7 @@ export const api = {
   log: (id: number, offset: number) => request<LogChunk>("GET", `/api/runs/${id}/log?offset=${offset}`),
   cancelRun: (id: number) => request<Run>("POST", `/api/runs/${id}/cancel`),
   approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
+  followUp: (id: number, instructions: string) => request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions }),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
   schedulePreview: (expression: string) =>

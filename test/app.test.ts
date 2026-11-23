@@ -345,3 +345,26 @@ test("watch jobs: check now, approval, and updates from older clients keep the w
   assert.equal(tooLong.status, 400);
   assert.ok(tooLong.json.fields.watchCommand);
 });
+
+test("follow-ups need a finished run and instructions", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("sleep");
+  const job = (await app.call("POST", "/api/jobs", { name: "Slow", repoPath: app.repo, prompt: "wait" })).json;
+  const run = (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json;
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/follow-up`, { instructions: "More" })).status, 409);
+  const finished = waitForFinish(app.runner, run.id);
+  await app.call("POST", `/api/runs/${run.id}/cancel`, {});
+  await finished;
+
+  const empty = await app.call("POST", `/api/runs/${run.id}/follow-up`, { instructions: "  " });
+  assert.equal(empty.status, 400);
+  assert.ok(empty.json.fields.instructions);
+  assert.equal((await app.call("POST", "/api/runs/999/follow-up", { instructions: "More" })).status, 404);
+
+  app.useFakeAgent("noop");
+  const followUp = await app.call("POST", `/api/runs/${run.id}/follow-up`, { instructions: " Finish it " });
+  assert.equal(followUp.status, 200);
+  assert.equal(followUp.json.followUpOf, run.id);
+  assert.equal(followUp.json.instructions, "Finish it");
+  await waitForFinish(app.runner, followUp.json.id);
+});

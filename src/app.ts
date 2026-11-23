@@ -17,6 +17,7 @@ const PACKAGE_VERSION = (JSON.parse(readFileSync(new URL("../package.json", impo
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_LOG_TAIL = 64 * 1024;
 const MAX_LOG_CHUNK = 256 * 1024;
+const MAX_INSTRUCTIONS = 20_000;
 
 class HttpError extends Error {
   readonly status: number;
@@ -260,6 +261,27 @@ export function createApp(deps: AppDeps) {
           return run;
         } catch (error) {
           if (error instanceof JobPausedError) throw new HttpError(409, error.message);
+          throw error;
+        }
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/runs\/(\d+)\/follow-up$/,
+      async (req, [id]) => {
+        const previous = store.getRun(Number(id));
+        if (!previous) throw new HttpError(404, "Run not found");
+        if (ACTIVE_STATUSES.includes(previous.status)) throw new HttpError(409, "Follow up on a run once it has finished");
+        const body = await readJson(req);
+        const instructions = typeof body.instructions === "string" ? body.instructions.trim() : "";
+        if (!instructions) throw new HttpError(400, "Fix the highlighted fields", { instructions: "Say what the agent should do" });
+        if (instructions.length > MAX_INSTRUCTIONS) {
+          throw new HttpError(400, "Fix the highlighted fields", { instructions: `Keep it under ${MAX_INSTRUCTIONS} characters` });
+        }
+        try {
+          return runner.followUp(previous, instructions);
+        } catch (error) {
+          if (error instanceof QueueFullError) throw new HttpError(429, error.message);
           throw error;
         }
       },

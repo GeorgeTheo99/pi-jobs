@@ -87,6 +87,17 @@ item's title next to its job.
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 
+### Follow-ups
+
+To act on what a finished run found (implement the feature a triage run proposed, say), type new
+instructions under **Follow up** on its run page, or `POST /api/runs/<id>/follow-up` with
+`{"instructions": "..."}`. That starts a new run of the same job from the earlier run's commits (from
+the job's base when it had none), on its own branch. Its prompt is your instructions, followed by the
+earlier run's instructions, payload and agent output (not its check's) as context; your instructions
+win where they differ. A follow-up is started by a person, like **Run now**: it needs no approval and
+runs while the job is paused (retries, as for any run, only while the job is on). Follow-ups can
+follow up on follow-ups.
+
 Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
 

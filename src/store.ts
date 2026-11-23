@@ -64,6 +64,10 @@ export interface Run {
   retryOf: number | null;
   /** A queued retry waits until this time. */
   notBefore: string | null;
+  /** The finished run this one follows up on: it starts from that run's result with new instructions. */
+  followUpOf: number | null;
+  /** A follow-up's instructions, which take the place of the job's. */
+  instructions: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -80,7 +84,7 @@ export interface Run {
 }
 
 export type RunPatch = Partial<
-  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "createdAt">
+  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "createdAt">
 >;
 
 export const DEFAULT_RETRIES = 2;
@@ -171,6 +175,8 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "approve_runs", "INTEGER NOT NULL DEFAULT 0"],
   ["jobs", "watch_checked_at", "TEXT"],
   ["jobs", "watch_error", "TEXT"],
+  ["runs", "follow_up_of", "INTEGER"],
+  ["runs", "instructions", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -246,6 +252,8 @@ function toRun(row: Row): Run {
     attempt: Number(row.attempt),
     retryOf: num(row.retry_of),
     notBefore: (row.not_before as string | null) ?? null,
+    followUpOf: num(row.follow_up_of),
+    instructions: (row.instructions as string | null) ?? null,
     branch: row.branch as string | null,
     worktree: row.worktree as string | null,
     baseCommit: row.base_commit as string | null,
@@ -401,14 +409,36 @@ export class Store {
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
+  /** Queues a run that continues `of` (a finished run) with new instructions, keeping its payload. */
+  createFollowUp(of: Run, agent: AgentId, instructions: string): Run {
+    const result = this.db
+      .prepare(
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, created_at)
+         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?)`,
+      )
+      .run(of.jobId, agent, of.payload, of.id, instructions, now());
+    return this.getRun(Number(result.lastInsertRowid))!;
+  }
+
   /** Queues another attempt of a finished run that may start at `notBefore`. */
   createRetry(of: Run, notBefore: Date): Run {
     const result = this.db
       .prepare(
-        `INSERT INTO runs (job_id, trigger, status, agent, payload, attempt, retry_of, not_before, created_at)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, attempt, retry_of, not_before, follow_up_of, instructions, created_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(of.jobId, of.trigger, of.agent, of.payload, of.attempt + 1, of.id, notBefore.toISOString(), now());
+      .run(
+        of.jobId,
+        of.trigger,
+        of.agent,
+        of.payload,
+        of.attempt + 1,
+        of.id,
+        notBefore.toISOString(),
+        of.followUpOf,
+        of.instructions,
+        now(),
+      );
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
