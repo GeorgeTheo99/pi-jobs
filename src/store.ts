@@ -4,9 +4,12 @@ import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { AGENT_IDS, AGENT_PRESETS, isAgentId, type AgentId } from "./agents.ts";
 
-export type Trigger = "manual" | "schedule" | "webhook";
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
-export const ACTIVE_STATUSES: readonly RunStatus[] = ["queued", "running"];
+export type Trigger = "manual" | "schedule" | "webhook" | "watch";
+export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
+/** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
+export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
+/** Runs that haven't started, which the per-job queue limit counts. */
+export const WAITING_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued"];
 
 export interface JobInput {
   name: string;
@@ -25,6 +28,13 @@ export interface JobInput {
   catchUp: boolean;
   /** Times a failed or timed-out run is retried. */
   retries: number;
+  /**
+   * Shell command run in the repository on each schedule fire instead of an agent: every JSON
+   * line it prints with an `id` not seen before starts one run with that line as its payload.
+   */
+  watchCommand: string | null;
+  /** Runs started by the schedule, webhook or watch wait for approval; manual runs never do. */
+  approveRuns: boolean;
   enabled: boolean;
 }
 
@@ -34,6 +44,9 @@ export interface Job extends JobInput {
   webhookToken: string | null;
   /** When the schedule last fired (or a missed fire was handled). */
   lastFiredAt: string | null;
+  /** When the watch command last finished, and what went wrong if it did. */
+  watchCheckedAt: string | null;
+  watchError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -127,6 +140,14 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- Items a job's watch command printed, so each starts one run.
+CREATE TABLE IF NOT EXISTS watch_items (
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  run_id INTEGER,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -146,6 +167,10 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["runs", "attempt", "INTEGER NOT NULL DEFAULT 1"],
   ["runs", "retry_of", "INTEGER"],
   ["runs", "not_before", "TEXT"],
+  ["jobs", "watch_command", "TEXT"],
+  ["jobs", "approve_runs", "INTEGER NOT NULL DEFAULT 0"],
+  ["jobs", "watch_checked_at", "TEXT"],
+  ["jobs", "watch_error", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -195,8 +220,12 @@ function toJob(row: Row): Job {
     pushBranch: row.push_branch === 1,
     catchUp: row.catch_up === 1,
     retries: Number(row.retries),
+    watchCommand: (row.watch_command as string | null) ?? null,
+    approveRuns: row.approve_runs === 1,
     enabled: row.enabled === 1,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
+    watchCheckedAt: (row.watch_checked_at as string | null) ?? null,
+    watchError: (row.watch_error as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -261,8 +290,9 @@ export class Store {
     const result = this.db
       .prepare(
         `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
-           timeout_minutes, check_command, push_branch, catch_up, retries, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, enabled,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -277,6 +307,8 @@ export class Store {
         input.pushBranch ? 1 : 0,
         input.catchUp ? 1 : 0,
         input.retries,
+        input.watchCommand,
+        input.approveRuns ? 1 : 0,
         input.enabled ? 1 : 0,
         ts,
         ts,
@@ -289,7 +321,7 @@ export class Store {
       .prepare(
         `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
-           enabled = ?, updated_at = ?
+           watch_command = ?, approve_runs = ?, enabled = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -305,6 +337,8 @@ export class Store {
         input.pushBranch ? 1 : 0,
         input.catchUp ? 1 : 0,
         input.retries,
+        input.watchCommand,
+        input.approveRuns ? 1 : 0,
         input.enabled ? 1 : 0,
         now(),
         id,
@@ -316,14 +350,38 @@ export class Store {
     this.db.prepare("UPDATE jobs SET last_fired_at = ? WHERE id = ?").run(now(), id);
   }
 
+  setWatchResult(id: number, error: string | null): void {
+    this.db.prepare("UPDATE jobs SET watch_checked_at = ?, watch_error = ? WHERE id = ?").run(now(), error, id);
+  }
+
+  /** Which of `itemIds` the job's watch has already seen. */
+  seenItems(jobId: number, itemIds: string[]): Set<string> {
+    const seen = new Set<string>();
+    const query = this.db.prepare("SELECT 1 FROM watch_items WHERE job_id = ? AND item_id = ?");
+    for (const itemId of itemIds) if (query.get(jobId, itemId)) seen.add(itemId);
+    return seen;
+  }
+
+  recordItem(jobId: number, itemId: string, runId: number): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO watch_items (job_id, item_id, run_id, seen_at) VALUES (?, ?, ?, ?)")
+      .run(jobId, itemId, runId, now());
+  }
+
   deleteJob(id: number): void {
     this.db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
   }
 
-  createRun(jobId: number, trigger: Trigger, agent: AgentId, payload: string | null): Run {
+  createRun(
+    jobId: number,
+    trigger: Trigger,
+    agent: AgentId,
+    payload: string | null,
+    status: "queued" | "awaiting_approval" = "queued",
+  ): Run {
     const result = this.db
-      .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, created_at) VALUES (?, ?, 'queued', ?, ?, ?)")
-      .run(jobId, trigger, agent, payload, now());
+      .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(jobId, trigger, status, agent, payload, now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 

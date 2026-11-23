@@ -294,3 +294,43 @@ test("repos resolve by remote URL", async (t) => {
   assert.equal((await resolve({ remotes: ["https://github.com/someone/else.git"] })).status, 404);
   assert.equal((await resolve({ remotes: [] })).status, 400);
 });
+
+test("watch jobs: check now, approval, and updates from older clients keep the watch", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("noop");
+  const plain = (await app.call("POST", "/api/jobs", { name: "Plain", repoPath: app.repo, prompt: "x" })).json;
+  assert.equal(plain.watchCommand, null);
+  assert.equal(plain.approveRuns, false);
+  assert.equal((await app.call("POST", `/api/jobs/${plain.id}/watch`, {})).status, 409);
+
+  const job = (await app.call("POST", "/api/jobs", {
+    name: "Triage", repoPath: app.repo, prompt: "Triage {{payload}}", watchCommand: `echo '{"id":"r1"}'`, approveRuns: true,
+  })).json;
+  assert.deepEqual([job.watchCommand, job.approveRuns, job.watchCheckedAt], [`echo '{"id":"r1"}'`, true, null]);
+
+  const checked = await app.call("POST", `/api/jobs/${job.id}/watch`, {});
+  assert.equal(checked.status, 200);
+  assert.equal(checked.json.runs.length, 1);
+  const waiting = checked.json.runs[0];
+  assert.deepEqual([waiting.status, waiting.trigger], ["awaiting_approval", "watch"]);
+  assert.equal((await app.call("POST", `/api/jobs/${job.id}/watch`, {})).json.seen, 1);
+  assert.equal((await app.call("DELETE", `/api/jobs/${job.id}`, {})).status, 409, "a waiting run blocks deletion");
+
+  assert.equal((await app.call("POST", "/api/runs/99999/approve", {})).status, 404);
+  const approved = await app.call("POST", `/api/runs/${waiting.id}/approve`, {});
+  assert.equal(approved.status, 200);
+  assert.notEqual(approved.json.status, "awaiting_approval");
+  await waitForFinish(app.runner, waiting.id);
+  assert.equal((await app.call("POST", `/api/runs/${waiting.id}/approve`, {})).status, 409);
+
+  // pi-shared's jobs tools from before watch commands send neither field.
+  const { watchCommand: _watch, approveRuns: _approve, ...older } = job;
+  const updated = (await app.call("PUT", `/api/jobs/${job.id}`, { ...older, name: "Triage 2" })).json;
+  assert.deepEqual([updated.name, updated.watchCommand, updated.approveRuns], ["Triage 2", `echo '{"id":"r1"}'`, true]);
+  const cleared = (await app.call("PUT", `/api/jobs/${job.id}`, { ...older, watchCommand: "", approveRuns: false })).json;
+  assert.deepEqual([cleared.watchCommand, cleared.approveRuns], [null, false]);
+
+  const tooLong = await app.call("POST", "/api/jobs", { name: "Long", repoPath: app.repo, prompt: "x", watchCommand: "x".repeat(4001) });
+  assert.equal(tooLong.status, 400);
+  assert.ok(tooLong.json.fields.watchCommand);
+});

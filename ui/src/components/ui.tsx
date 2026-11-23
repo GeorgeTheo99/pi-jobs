@@ -3,6 +3,7 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { AGENT_LABELS, type AgentId, type RunStatus } from "@/lib/api";
 
 const STATUS_STYLES: Record<RunStatus, { label: string; className: string }> = {
+  awaiting_approval: { label: "Needs approval", className: "border-amber/45 text-amber" },
   queued: { label: "Queued", className: "border-steel/70 text-fog" },
   running: { label: "Running", className: "border-amber/45 bg-amber/10 text-amber" },
   succeeded: { label: "Succeeded", className: "border-green/40 bg-green/10 text-green" },

@@ -1,4 +1,4 @@
-import { CalendarClock, Play, Plus, Webhook } from "lucide-react";
+import { CalendarClock, Play, Plus, RadioTower, Webhook } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AgentBadge, ErrorNote, PageHeader, Skeleton, StatusPill, Switch } from "@/components/ui";
@@ -37,7 +37,7 @@ export function JobsPage() {
     <>
       <PageHeader
         title="Jobs"
-        meta="Agents that work on your repos on a schedule, from a webhook, or when you run them."
+        meta="Agents that work on your repos on a schedule, from a webhook or watch, or when you run them."
         actions={
           <Link to="/jobs/new" className="btn btn-primary">
             <Plus aria-hidden className="size-4" />
@@ -81,6 +81,13 @@ export function JobsPage() {
                       Webhook
                     </span>
                   )}
+                  {job.watchCommand && (
+                    <span className="inline-flex items-center gap-1 text-fog" title="Watch command on">
+                      <RadioTower aria-hidden className="size-3.5" />
+                      Watch
+                    </span>
+                  )}
+                  {job.approveRuns && <span className="text-fog">Approve first</span>}
                 </div>
 
                 <div>

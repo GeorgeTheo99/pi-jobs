@@ -1,6 +1,6 @@
 # pi-jobs
 
-Scheduled, webhook-triggered and on-demand coding-agent jobs for your git repositories, with a
+Scheduled, webhook-triggered, watch-triggered and on-demand coding-agent jobs for your git repositories, with a
 web UI to manage jobs, schedules and runs. It runs [Pi](https://pi.dev) by
 default; Claude Code and Codex are selectable per job or as the default in Settings. From any Pi
 session, [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s `jobs_*` tools create, change,
@@ -39,7 +39,9 @@ which URL each machine's Pi tools use, are configuration.
 
 ## How a run works
 
-1. A trigger fires: the job's cron schedule, its webhook, or **Run now**.
+1. A trigger fires: the job's cron schedule, its webhook, a new item from its watch command, or
+   **Run now**. With **Approve before running**, a run from the schedule, webhook or watch waits
+   as **Needs approval** until you approve it.
 2. The runner fetches the base branch from `origin` and creates a git worktree from its pushed
    tip, on a new branch `pi-jobs/<job>/run-<id>`, so runs see what any machine pushed and never
    unpushed local work. `origin/<branch>` works the same way. Tags, revision expressions
@@ -66,9 +68,21 @@ yourself.
 |---|---|
 | Schedule | Cron, in the server's local time zone. A fire is skipped while a run of the same job is queued or running. With **Catch up missed runs** (on by default), times missed while the server was down or the Mac asleep run once when it is back; off, they are skipped |
 | Webhook | `POST /api/hooks/<job id>` with `Authorization: Bearer <token>` (or `?token=`). The body becomes the payload: it replaces `{{payload}}` in the instructions, or is appended. Up to 20 queued runs per job |
+| Watch | A shell command the schedule runs in the repository instead of the agent, for sources pi-jobs can't receive webhooks from (a cloud inbox behind a firewall, say). Every line it prints is a JSON object with an `id` (string or number, up to 200 characters); each `id` not seen before starts one run with that line as the payload. **Check now** in the UI, or `POST /api/jobs/<id>/watch`, checks immediately. The command must exit 0 within 2 minutes and print at most 1 MiB; the job page shows the last check's error. Items the queue has no room for start at a later check. The first check starts runs for everything printed, so print only what should be handled |
 | Manual | **Run now** in the UI, or `POST /api/jobs/<id>/run` |
 
-Paused jobs ignore their schedule and webhook. Each job runs one at a time, and **Settings** caps
+### Approval
+
+With **Approve before running** on, runs from the schedule, webhook or watch are created as
+**Needs approval**. They start only after **Approve** on the run page (or
+`POST /api/runs/<id>/approve`); **Dismiss** (or `POST /api/runs/<id>/cancel`) cancels one without
+running. Manual runs and retries of an approved run start without asking. A run waiting for
+approval counts as queued: it holds back the job's schedule and its per-job queue limit. The Runs
+page filters to **Needs approval**.
+
+Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
+
+Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
 
 A run that fails or times out is retried up to the job's **Retries** (default 2, at most 5) as a new
@@ -175,7 +189,7 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 | Server log | `~/.local/state/pi-jobs/server.log` |
 
 State lives in `~/.local/state/pi-jobs/`: `pi-jobs.db` (SQLite: jobs, runs, settings, token hashes),
-`runs/<id>.log`, and `worktrees/` for kept worktrees. Restarting the server fails runs that were
+`runs/<id>.log`, and `worktrees/` for kept worktrees. Watch items seen are kept per job (`watch_items`). Restarting the server fails runs that were
 in progress (and retries them if their job allows). Queued runs resume.
 
 | Variable | Default |

@@ -7,6 +7,7 @@ import { usePoll } from "@/lib/usePoll";
 
 const FILTERS: { id: string; label: string; match: (run: Run) => boolean }[] = [
   { id: "all", label: "All", match: () => true },
+  { id: "approval", label: "Needs approval", match: (run) => run.status === "awaiting_approval" },
   { id: "active", label: "Active", match: (run) => isActive(run.status) },
   { id: "changes", label: "With changes", match: (run) => (run.commits ?? 0) > 0 },
   { id: "failed", label: "Failed", match: (run) => run.status === "failed" || run.status === "timed_out" },

@@ -43,6 +43,8 @@ export function setup() {
     pushBranch: false,
     catchUp: true,
     retries: 0,
+    watchCommand: null,
+    approveRuns: false,
     enabled: true,
     ...overrides,
   });

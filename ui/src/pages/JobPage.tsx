@@ -1,4 +1,4 @@
-import { Play, RefreshCw, Trash2 } from "lucide-react";
+import { Play, RadioTower, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { RunList } from "@/components/RunList";
@@ -14,6 +14,7 @@ import {
   type Job,
   type JobDraft,
   type SchedulePreview,
+  type WatchResult,
 } from "@/lib/api";
 import { SCHEDULE_PRESETS, dateTime } from "@/lib/format";
 import { usePoll } from "@/lib/usePoll";
@@ -31,6 +32,8 @@ const EMPTY_DRAFT: JobDraft = {
   pushBranch: false,
   catchUp: true,
   retries: 2,
+  watchCommand: "",
+  approveRuns: false,
   enabled: true,
 };
 
@@ -172,7 +175,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               hint={
                 <>
                   Sent to the agent with notes about its worktree and branch. Put <code className="font-mono text-bone">{"{{payload}}"}</code> where webhook
-                  data should go; otherwise it is appended.
+                  or watch data should go; otherwise it is appended.
                 </>
               }
             >
@@ -221,6 +224,35 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               />
               {draft.webhookEnabled && <WebhookDetails job={job} onRotated={onSaved} />}
             </div>
+            <Field
+              label="Watch command"
+              error={fields.watchCommand}
+              hint={
+                <>
+                  Optional. When set, each scheduled time runs this in the repository instead of the agent. Every JSON line it prints
+                  with an <code className="font-mono text-bone">id</code> not seen before starts one run, with that line as the payload.
+                </>
+              }
+            >
+              {(p) => (
+                <input
+                  {...p}
+                  className="field font-mono text-[13px]"
+                  value={draft.watchCommand}
+                  onChange={(e) => set("watchCommand", e.target.value)}
+                  placeholder="node scripts/new-reports.mjs"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                />
+              )}
+            </Field>
+            {job?.watchCommand && <WatchStatus job={job} onChecked={() => void runs.refresh()} />}
+            <ToggleRow
+              label="Approve before running"
+              hint="Runs started by the schedule, webhook or watch wait as Needs approval until you approve or dismiss them. Manual runs start right away."
+              checked={draft.approveRuns}
+              onChange={(v) => set("approveRuns", v)}
+            />
           </Section>
 
           <Section title="Limits and checks">
@@ -391,6 +423,44 @@ function ScheduleField({ value, error, onChange }: { value: string; error?: stri
         </div>
       )}
     </Field>
+  );
+}
+
+function WatchStatus({ job, onChecked }: { job: Job; onChecked: () => void }) {
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<WatchResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const check = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      setResult(await api.checkWatch(job.id));
+      onChecked();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+    }
+  };
+  const problem = error ?? (result ? result.error : job.watchError);
+  const summary = result
+    ? `Checked now: ${result.runs.length} new, ${result.seen} seen before.`
+    : job.watchCheckedAt
+      ? `Last checked ${dateTime(job.watchCheckedAt)}.`
+      : "Not checked yet.";
+  return (
+    <div className="grid gap-2 rounded-[12px] border border-steel/40 bg-inkwell/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-[13px] text-fog" role="status">
+          {summary}
+        </span>
+        <button type="button" className="btn btn-ghost" disabled={checking || !job.enabled} onClick={() => void check()}>
+          <RadioTower aria-hidden className="size-3.5" />
+          {checking ? "Checking…" : "Check now"}
+        </button>
+      </div>
+      {problem && <p className="text-[12px] leading-snug text-red">{problem}</p>}
+    </div>
   );
 }
 

@@ -200,6 +200,16 @@ export function createApp(deps: AppDeps) {
     ],
     [
       "POST",
+      /^\/api\/jobs\/(\d+)\/watch$/,
+      async (_req, [id]) => {
+        const job = findJob(id);
+        if (!job.watchCommand) throw new HttpError(409, "This job has no watch command");
+        if (!job.enabled) throw new HttpError(409, "Job is paused");
+        return runner.watch(job);
+      },
+    ],
+    [
+      "POST",
       /^\/api\/jobs\/(\d+)\/webhook-token$/,
       async (_req, [id]) => {
         const job = findJob(id);
@@ -237,6 +247,16 @@ export function createApp(deps: AppDeps) {
         }
         const { text, next, size } = await readChunk(runner.logPath(run.id), offset);
         return { text, offset: next, size, done: !ACTIVE_STATUSES.includes(run.status) && next >= size };
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/runs\/(\d+)\/approve$/,
+      async (_req, [id]) => {
+        if (!store.getRun(Number(id))) throw new HttpError(404, "Run not found");
+        const run = runner.approve(Number(id));
+        if (!run) throw new HttpError(409, "This run isn't waiting for approval");
+        return run;
       },
     ],
     [
@@ -414,6 +434,10 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
     fields.timeoutMinutes = "Use a whole number of minutes from 1 to 1440";
   }
 
+  // Clients from before watch commands leave them out; an update from one keeps the job's.
+  const watchCommand = body.watchCommand === undefined ? (existing?.watchCommand ?? null) : text("watchCommand") || null;
+  if (watchCommand && watchCommand.length > 4000) fields.watchCommand = "Keep the watch command under 4,000 characters";
+
   const retries = Number(body.retries ?? existing?.retries ?? DEFAULT_RETRIES);
   if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {
     fields.retries = `Use a whole number from 0 to ${MAX_RETRIES}`;
@@ -432,6 +456,8 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
     pushBranch: body.pushBranch === true,
     catchUp: typeof body.catchUp === "boolean" ? body.catchUp : (existing?.catchUp ?? true),
     retries,
+    watchCommand,
+    approveRuns: typeof body.approveRuns === "boolean" ? body.approveRuns : (existing?.approveRuns ?? false),
     enabled: body.enabled !== false,
   };
 }

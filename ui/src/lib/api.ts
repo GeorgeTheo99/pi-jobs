@@ -1,10 +1,15 @@
 export type AgentId = "pi" | "claude" | "codex";
-export type Trigger = "manual" | "schedule" | "webhook";
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
+export type Trigger = "manual" | "schedule" | "webhook" | "watch";
+export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
 export const AGENT_LABELS: Record<AgentId, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
 export const AGENT_IDS = Object.keys(AGENT_LABELS) as AgentId[];
-export const TRIGGER_LABELS: Record<Trigger, string> = { manual: "Manual", schedule: "Schedule", webhook: "Webhook" };
+export const TRIGGER_LABELS: Record<Trigger, string> = {
+  manual: "Manual",
+  schedule: "Schedule",
+  webhook: "Webhook",
+  watch: "Watch",
+};
 
 export interface Run {
   id: number;
@@ -46,8 +51,12 @@ export interface Job {
   pushBranch: boolean;
   catchUp: boolean;
   retries: number;
+  watchCommand: string | null;
+  approveRuns: boolean;
   enabled: boolean;
   lastFiredAt: string | null;
+  watchCheckedAt: string | null;
+  watchError: string | null;
   createdAt: string;
   updatedAt: string;
   effectiveAgent: AgentId;
@@ -69,7 +78,15 @@ export interface JobDraft {
   pushBranch: boolean;
   catchUp: boolean;
   retries: number;
+  watchCommand: string;
+  approveRuns: boolean;
   enabled: boolean;
+}
+
+export interface WatchResult {
+  runs: Run[];
+  seen: number;
+  error: string | null;
 }
 
 export interface Settings {
@@ -155,19 +172,22 @@ export const api = {
   updateJob: (id: number, draft: JobDraft) => request<Job>("PUT", `/api/jobs/${id}`, draft),
   deleteJob: (id: number) => request<{ ok: true }>("DELETE", `/api/jobs/${id}`),
   runJob: (id: number) => request<Run>("POST", `/api/jobs/${id}/run`),
+  checkWatch: (id: number) => request<WatchResult>("POST", `/api/jobs/${id}/watch`),
   rotateToken: (id: number) => request<Job>("POST", `/api/jobs/${id}/webhook-token`),
   runs: (jobId?: number, limit = 100) =>
     request<Run[]>("GET", `/api/runs?limit=${limit}${jobId === undefined ? "" : `&jobId=${jobId}`}`),
   run: (id: number) => request<Run>("GET", `/api/runs/${id}`),
   log: (id: number, offset: number) => request<LogChunk>("GET", `/api/runs/${id}/log?offset=${offset}`),
   cancelRun: (id: number) => request<Run>("POST", `/api/runs/${id}/cancel`),
+  approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
   schedulePreview: (expression: string) =>
     request<SchedulePreview>("GET", `/api/schedule-preview?expression=${encodeURIComponent(expression)}`),
 };
 
-export const isActive = (status: RunStatus) => status === "queued" || status === "running";
+export const isActive = (status: RunStatus) =>
+  status === "awaiting_approval" || status === "queued" || status === "running";
 
 export function jobToDraft(job: Job): JobDraft {
   return {
@@ -183,6 +203,8 @@ export function jobToDraft(job: Job): JobDraft {
     pushBranch: job.pushBranch,
     catchUp: job.catchUp,
     retries: job.retries,
+    watchCommand: job.watchCommand ?? "",
+    approveRuns: job.approveRuns,
     enabled: job.enabled,
   };
 }

@@ -1,4 +1,4 @@
-import { Square } from "lucide-react";
+import { Check, Square } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { CopyButton, ErrorNote, PageHeader, Skeleton, StatusPill } from "@/components/ui";
@@ -24,10 +24,10 @@ export function RunPage() {
     if (jobId !== undefined) api.job(jobId).then(setJob, () => setJob(null));
   }, [jobId]);
 
-  const cancel = async () => {
+  const act = async (action: (id: number) => Promise<Run>) => {
     setCancelError(null);
     try {
-      await api.cancelRun(runId);
+      await action(runId);
       await refresh();
     } catch (err) {
       setCancelError(err instanceof Error ? err.message : String(err));
@@ -58,11 +58,23 @@ export function RunPage() {
           )
         }
         actions={
-          isActive(run.status) && (
-            <button type="button" className="btn btn-danger" onClick={() => void cancel()}>
-              <Square aria-hidden className="size-3.5" />
-              {run.status === "queued" ? "Cancel" : "Stop run"}
-            </button>
+          run.status === "awaiting_approval" ? (
+            <>
+              <button type="button" className="btn btn-ghost" onClick={() => void act(api.cancelRun)}>
+                Dismiss
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => void act(api.approveRun)}>
+                <Check aria-hidden className="size-3.5" />
+                Approve
+              </button>
+            </>
+          ) : (
+            isActive(run.status) && (
+              <button type="button" className="btn btn-danger" onClick={() => void act(api.cancelRun)}>
+                <Square aria-hidden className="size-3.5" />
+                {run.status === "queued" ? "Cancel" : "Stop run"}
+              </button>
+            )
           )
         }
       />
@@ -84,9 +96,11 @@ export function RunPage() {
           <Meta label="Agent">{AGENT_LABELS[run.agent]}</Meta>
           <Meta label="Started">{run.startedAt
               ? dateTime(run.startedAt)
-              : run.status === "queued" && run.notBefore && Date.parse(run.notBefore) > now
-                ? `Retry at ${dateTime(run.notBefore)}`
-                : "Waiting for a slot"}</Meta>
+              : run.status === "awaiting_approval"
+                ? "Waiting for approval"
+                : run.status === "queued" && run.notBefore && Date.parse(run.notBefore) > now
+                  ? `Retry at ${dateTime(run.notBefore)}`
+                  : "Waiting for a slot"}</Meta>
           <Meta label="Duration">
             <span className="tabular-nums">{duration(run.startedAt, run.finishedAt, now)}</span>
           </Meta>
@@ -107,7 +121,7 @@ export function RunPage() {
         {run.payload && (
           <details className="group rounded-[12px] border border-steel/40">
             <summary className="flex min-h-11 cursor-pointer items-center px-4 text-[13px] font-semibold text-fog hover:text-bone">
-              Webhook payload
+              {run.trigger === "watch" ? "Watch item" : "Webhook payload"}
             </summary>
             <pre className="log-view overflow-x-auto rounded-b-[12px] border-t border-steel/40 px-4 py-3 whitespace-pre-wrap text-bone">
               {run.payload}

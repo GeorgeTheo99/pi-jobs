@@ -20,7 +20,12 @@ const fireSchedule = (jobId: number, missed: boolean) => {
   try {
     const result = runner.fireSchedule(job, missed);
     if ("skipped" in result) console.log(`Skipped scheduled run of "${job.name}": ${result.skipped}`);
-    else if (missed) console.log(`Caught up a missed scheduled run of "${job.name}" (run #${result.run.id})`);
+    else if ("watch" in result) {
+      void result.watch.then(({ runs, error }) => {
+        if (runs.length > 0) console.log(`Watch of "${job.name}" started run(s) ${runs.map((run) => `#${run.id}`).join(", ")}`);
+        if (error) console.warn(`Watch of "${job.name}": ${error}`);
+      });
+    } else if (missed) console.log(`Caught up a missed scheduled run of "${job.name}" (run #${result.run.id})`);
   } catch (error) {
     console.error(`Scheduled run of "${job.name}" failed to queue:`, error);
   }

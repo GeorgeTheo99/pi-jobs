@@ -408,3 +408,130 @@ test("a missed scheduled fire runs only when the job catches up", (t) => {
   assert.equal(caught.run.trigger, "schedule");
   ctx.runner.cancel(caught.run.id);
 });
+
+test("parseWatchOutput reads one JSON object a line, keyed by id", async () => {
+  const { parseWatchOutput } = await import("../src/runner.ts");
+  const ok = parseWatchOutput('{"id":"a","x":1}\n\n{"id":2}\n{"id":"a"}\n');
+  assert.equal(ok.error, null);
+  assert.deepEqual(ok.items.map((item) => item.id), ["a", "2"]);
+  assert.deepEqual(JSON.parse(ok.items[0]!.payload), { id: "a", x: 1 });
+  assert.match(parseWatchOutput('{"id":"a"}\nnope').error!, /Line 2 is not JSON/);
+  assert.match(parseWatchOutput('{"name":"a"}').error!, /Line 1 has no "id"/);
+  assert.match(parseWatchOutput("[1]").error!, /no "id"/);
+});
+
+test("a watch starts one run for each new item, with the item as the payload", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("noop");
+  writeFileSync(path.join(ctx.root, "items.jsonl"), '{"id":"r1","title":"Crash"}\n{"id":"r2","title":"Idea"}\n');
+  const job = ctx.store.createJob(ctx.jobInput({ watchCommand: `cat ${path.join(ctx.root, "items.jsonl")}` }), null);
+
+  const first = await ctx.runner.watch(job);
+  assert.equal(first.error, null);
+  assert.equal(first.seen, 0);
+  assert.deepEqual(first.runs.map((run) => run.trigger), ["watch", "watch"]);
+  assert.deepEqual(JSON.parse(first.runs[0]!.payload!), { id: "r1", title: "Crash" });
+  for (const run of first.runs) await waitForFinish(ctx.runner, run.id);
+
+  writeFileSync(path.join(ctx.root, "items.jsonl"), '{"id":"r3"}\n{"id":"r1","title":"Crash"}\n');
+  const second = await ctx.runner.watch(job);
+  assert.equal(second.seen, 1);
+  assert.deepEqual(second.runs.map((run) => JSON.parse(run.payload!).id), ["r3"]);
+  await waitForFinish(ctx.runner, second.runs[0]!.id);
+  const checked = ctx.store.getJob(job.id)!;
+  assert.ok(checked.watchCheckedAt);
+  assert.equal(checked.watchError, null);
+});
+
+test("a failing or malformed watch is reported and starts nothing it couldn't read", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("noop");
+  const failing = ctx.store.createJob(ctx.jobInput({ watchCommand: "echo broken >&2; exit 4" }), null);
+  const failed = await ctx.runner.watch(failing);
+  assert.equal(failed.runs.length, 0);
+  assert.match(failed.error!, /exited with code 4: broken/);
+  assert.match(ctx.store.getJob(failing.id)!.watchError!, /code 4/);
+
+  const malformed = ctx.store.createJob(ctx.jobInput({ name: "Malformed", watchCommand: `printf '{"id":"ok"}\\nnot json\\n'` }), null);
+  const partial = await ctx.runner.watch(malformed);
+  assert.equal(partial.runs.length, 1, "items before the bad line still start runs");
+  assert.match(partial.error!, /Line 2 is not JSON/);
+  await waitForFinish(ctx.runner, partial.runs[0]!.id);
+});
+
+test("items beyond the queue limit wait for a later check", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const { MAX_QUEUED_PER_JOB } = await import("../src/runner.ts");
+  const count = MAX_QUEUED_PER_JOB + 3;
+  const job = ctx.store.createJob(
+    ctx.jobInput({ approveRuns: true, watchCommand: `for i in $(seq 1 ${count}); do echo "{\\"id\\":$i}"; done` }),
+    null,
+  );
+  const first = await ctx.runner.watch(job);
+  assert.equal(first.runs.length, MAX_QUEUED_PER_JOB);
+  assert.match(first.error!, /wait for the next check/);
+  for (const run of first.runs.slice(0, 3)) ctx.runner.cancel(run.id);
+  const second = await ctx.runner.watch(job);
+  assert.equal(second.seen, MAX_QUEUED_PER_JOB);
+  assert.deepEqual(second.runs.map((run) => JSON.parse(run.payload!).id), [21, 22, 23]);
+});
+
+test("runs from automatic triggers wait for approval; manual runs don't", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("noop");
+  const job = ctx.store.createJob(ctx.jobInput({ approveRuns: true, schedule: "0 6 * * *" }), null);
+
+  const hooked = ctx.runner.trigger(job, "webhook", '{"id":1}');
+  assert.ok("run" in hooked);
+  assert.equal(hooked.run.status, "awaiting_approval");
+  assert.ok(!ctx.runner.isActive(hooked.run.id), "it doesn't start");
+  const scheduled = ctx.runner.fireSchedule(job, false);
+  assert.ok("skipped" in scheduled, "a run awaiting approval holds back the schedule");
+
+  const manual = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in manual);
+  assert.notEqual(manual.run.status, "awaiting_approval");
+  await waitForFinish(ctx.runner, manual.run.id);
+
+  assert.equal(ctx.runner.approve(manual.run.id), null, "only waiting runs can be approved");
+  const approved = ctx.runner.approve(hooked.run.id);
+  assert.ok(approved && approved.status !== "awaiting_approval");
+  const done = await waitForFinish(ctx.runner, hooked.run.id);
+  assert.equal(done.status, "succeeded");
+  assert.match(readFileSync(ctx.runner.logPath(done.id), "utf8"), /Waiting for approval[\s\S]*Approved; queued/);
+
+  const dismissed = ctx.runner.trigger(job, "webhook", null);
+  assert.ok("run" in dismissed);
+  assert.equal(ctx.runner.cancel(dismissed.run.id)?.status, "canceled");
+  assert.match(readFileSync(ctx.runner.logPath(dismissed.run.id), "utf8"), /Dismissed without running/);
+});
+
+test("a scheduled fire of a watch job checks the watch instead of starting a run", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("noop");
+  const job = ctx.store.createJob(ctx.jobInput({ schedule: "0 6 * * *", watchCommand: "true" }), null);
+  const fired = ctx.runner.fireSchedule(job, false);
+  assert.ok("watch" in fired);
+  const result = await fired.watch;
+  assert.deepEqual([result.runs.length, result.error], [0, null]);
+  assert.equal(ctx.store.listRuns({ jobId: job.id }).length, 0);
+});
+
+test("payloads from webhooks and watches are marked as outside data in the prompt", async () => {
+  const { buildPrompt } = await import("../src/runner.ts");
+  const ctx = setup();
+  try {
+    const job = ctx.store.createJob(ctx.jobInput(), null);
+    const run = ctx.store.createRun(job.id, "watch", "pi", '{"id":1}');
+    assert.match(buildPrompt(job, run, "b", "0123456789abcdef"), /came from outside this job/);
+    const manual = ctx.store.createRun(job.id, "manual", "pi", null);
+    assert.doesNotMatch(buildPrompt(job, manual, "b", "0123456789abcdef"), /came from outside/);
+  } finally {
+    await ctx.cleanup();
+  }
+});
