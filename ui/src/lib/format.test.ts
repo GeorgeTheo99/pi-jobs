@@ -1,4 +1,4 @@
-import { describeSchedule, duration, relativeTime, repoName } from "./format";
+import { describeSchedule, duration, relativeTime, repoName, summarizePayload } from "./format";
 
 const NOW = Date.parse("2026-11-09T12:00:00Z");
 
@@ -24,4 +24,31 @@ test("describeSchedule names presets and passes other cron through", () => {
 
 test("repoName uses the last path segment", () => {
   expect(repoName("/Users/me/local_code/model-gateway/")).toBe("model-gateway");
+});
+
+test("summarizePayload picks a headline and labels plain fields", () => {
+  const summary = summarizePayload(
+    JSON.stringify({
+      id: "home-server/e123",
+      kind: "problem",
+      release: null,
+      has_diagnostics: true,
+      attempts: 2,
+      context: { page: "/automations" },
+      description: "Let me reorder scenes",
+      receivedAt: "2026-11-22T22:55:21.845Z",
+    }),
+  );
+  expect(summary.headline).toBe("Let me reorder scenes");
+  expect(summary.fields.map((f) => f.label)).toEqual(["Id", "Kind", "Has diagnostics", "Attempts", "Received at"]);
+  expect(summary.fields[2].value).toBe("Yes");
+  expect(summary.fields[4].value).not.toContain("2026-11-22T");
+});
+
+test("summarizePayload prefers a title and handles text, arrays and nothing", () => {
+  expect(summarizePayload('{"description": "Details", "title": "Crash when saving"}').headline).toBe("Crash when saving");
+  expect(summarizePayload("plain text body\nsecond line")).toEqual({ headline: "plain text body", fields: [] });
+  expect(summarizePayload("[1, 2]")).toEqual({ headline: null, fields: [] });
+  expect(summarizePayload(null)).toEqual({ headline: null, fields: [] });
+  expect(summarizePayload("x".repeat(300)).headline).toHaveLength(200);
 });

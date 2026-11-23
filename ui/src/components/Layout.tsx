@@ -1,5 +1,5 @@
 import { CalendarClock, History, Settings } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { api, isActive } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 
@@ -20,13 +20,25 @@ function Brand() {
 
 function ActiveCount() {
   const { data } = usePoll(() => api.runs(undefined, 50), 3000);
-  const active = data?.filter((run) => isActive(run.status)).length ?? 0;
-  if (active === 0) return <span className="text-fog">Idle</span>;
+  const runs = data ?? [];
+  const approval = runs.filter((run) => run.status === "awaiting_approval").length;
+  const active = runs.filter((run) => isActive(run.status)).length - approval;
+  if (active === 0 && approval === 0) return <span className="text-fog">Idle</span>;
   return (
-    <span className="inline-flex items-center gap-2 text-amber">
-      <span aria-hidden className="size-1.5 rounded-full bg-amber" />
-      {active} active
-    </span>
+    <div className="grid gap-1.5">
+      {active > 0 && (
+        <span className="inline-flex items-center gap-2 text-amber">
+          <span aria-hidden className="size-1.5 rounded-full bg-amber" />
+          {active} active
+        </span>
+      )}
+      {approval > 0 && (
+        <Link to="/runs?filter=approval" className="inline-flex items-center gap-2 text-amber hover:text-bone">
+          <span aria-hidden className="size-1.5 rounded-full border border-amber" />
+          {approval} to approve
+        </Link>
+      )}
+    </div>
   );
 }
 

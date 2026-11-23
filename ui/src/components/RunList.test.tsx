@@ -44,3 +44,29 @@ test("shows status, job name, branch and links to the run", () => {
   expect(screen.getByText("Agent exited 1")).toBeTruthy();
   expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/runs/7", "/runs/8"]);
 });
+
+test("names webhook and watch runs by their payload", () => {
+  const waiting: Run = {
+    ...base,
+    trigger: "watch",
+    status: "awaiting_approval",
+    branch: null,
+    commits: null,
+    payload: JSON.stringify({ id: "a1", description: "Let me reorder scenes" }),
+  };
+  const { unmount } = render(
+    <MemoryRouter>
+      <RunList runs={[waiting]} jobNames={new Map([[1, "Support triage"]])} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("Support triage")).toBeTruthy();
+  expect(screen.getByText("Let me reorder scenes")).toBeTruthy();
+  unmount();
+  render(
+    <MemoryRouter>
+      <RunList runs={[waiting]} compact />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("Let me reorder scenes")).toBeTruthy();
+  expect(screen.getByText(/Watch · Pi/)).toBeTruthy();
+});

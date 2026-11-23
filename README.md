@@ -74,13 +74,16 @@ yourself.
 ### Approval
 
 With **Approve before running** on, runs from the schedule, webhook or watch are created as
-**Needs approval**. They start only after **Approve** on the run page (or
+**Needs approval**. The run page says what approving will start (agent, repository, base branch),
+shows the webhook or watch item it is for (its title or description, then its plain fields) and the
+job's instructions. They start only after **Approve and start** on the run page (or
 `POST /api/runs/<id>/approve`); **Dismiss** (or `POST /api/runs/<id>/cancel`) cancels one without
 running. Manual runs and retries of an approved run start without asking. A run waiting for
 approval counts as queued: it holds back the job's schedule (a watch job's schedule still checks
 its command) and counts toward its per-job queue limit, and it waits through server restarts. A
 paused job's waiting runs can't be approved until it is resumed. The Runs page filters to **Needs
-approval**.
+approval** (`/runs?filter=approval`, linked from the sidebar's **to approve** count), and lists each
+item's title next to its job.
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 

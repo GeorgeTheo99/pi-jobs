@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { CopyButton, ErrorNote, PageHeader, Skeleton, StatusPill } from "@/components/ui";
 import { AGENT_LABELS, TRIGGER_LABELS, api, isActive, type Job, type Run } from "@/lib/api";
-import { dateTime, duration } from "@/lib/format";
+import { dateTime, duration, repoName, summarizePayload } from "@/lib/format";
 import { useNow, usePoll } from "@/lib/usePoll";
 
 const MAX_LOG_CHARS = 2_000_000;
@@ -58,35 +58,21 @@ export function RunPage() {
           )
         }
         actions={
-          run.status === "awaiting_approval" ? (
-            <>
-              <button type="button" className="btn btn-ghost" onClick={() => void act(api.cancelRun)}>
-                Dismiss
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={job?.enabled === false}
-                title={job?.enabled === false ? "Resume the job to approve its runs" : undefined}
-                onClick={() => void act(api.approveRun)}
-              >
-                <Check aria-hidden className="size-3.5" />
-                Approve
-              </button>
-            </>
-          ) : (
-            isActive(run.status) && (
-              <button type="button" className="btn btn-danger" onClick={() => void act(api.cancelRun)}>
-                <Square aria-hidden className="size-3.5" />
-                {run.status === "queued" ? "Cancel" : "Stop run"}
-              </button>
-            )
+          run.status !== "awaiting_approval" &&
+          isActive(run.status) && (
+            <button type="button" className="btn btn-danger" onClick={() => void act(api.cancelRun)}>
+              <Square aria-hidden className="size-3.5" />
+              {run.status === "queued" ? "Cancel" : "Stop run"}
+            </button>
           )
         }
       />
 
       <div className="grid gap-6">
         <ErrorNote error={cancelError ?? run.error} />
+        {run.status === "awaiting_approval" && (
+          <Approval run={run} job={job} onApprove={() => void act(api.approveRun)} onDismiss={() => void act(api.cancelRun)} />
+        )}
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-[14px] border border-steel/40 bg-inkwell/40 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6">
           <Meta label="Trigger">
             {TRIGGER_LABELS[run.trigger]}
@@ -127,7 +113,7 @@ export function RunPage() {
         {run.payload && (
           <details className="group rounded-[12px] border border-steel/40">
             <summary className="flex min-h-11 cursor-pointer items-center px-4 text-[13px] font-semibold text-fog hover:text-bone">
-              {run.trigger === "watch" ? "Watch item" : "Webhook payload"}
+              {run.trigger === "watch" ? "Raw watch item" : "Raw webhook payload"}
             </summary>
             <pre className="log-view overflow-x-auto rounded-b-[12px] border-t border-steel/40 px-4 py-3 whitespace-pre-wrap text-bone">
               {run.payload}
@@ -141,6 +127,81 @@ export function RunPage() {
         </section>
       </div>
     </>
+  );
+}
+
+const APPROVAL_REASONS: Partial<Record<Run["trigger"], string>> = {
+  watch: "The job's watch found a new item.",
+  webhook: "The job's webhook received a request.",
+  schedule: "The job's schedule is due.",
+};
+
+/** Says what approving a waiting run will do, and what it was started for, next to the decision. */
+function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | null; onApprove: () => void; onDismiss: () => void }) {
+  const { headline, fields } = summarizePayload(run.payload);
+  const paused = job?.enabled === false;
+  return (
+    <section aria-labelledby="approval-title" className="grid gap-4 rounded-[14px] border border-amber/45 bg-amber/5 p-5">
+      <div className="grid gap-1.5">
+        <h2 id="approval-title" className="text-[16px] font-bold">
+          Start this run?
+        </h2>
+        <p className="text-[13px] leading-relaxed text-fog">
+          {APPROVAL_REASONS[run.trigger]} Approving starts {AGENT_LABELS[run.agent]}
+          {job ? (
+            <>
+              {" "}
+              on a new branch of <span className="font-mono text-bone">{repoName(job.repoPath)}</span> from{" "}
+              <span className="font-mono text-bone">{job.baseRef}</span>
+            </>
+          ) : (
+            " on a new branch"
+          )}
+          , following the job's instructions{run.payload ? " for the item below" : ""}. It never merges or deploys. Dismiss
+          cancels the run without starting it.
+        </p>
+      </div>
+
+      {(headline || fields.length > 0) && (
+        <div className="grid gap-3 rounded-[12px] border border-steel/40 bg-inkwell/60 px-4 py-3">
+          {headline && <p className="text-[15px] leading-snug font-semibold break-words text-bone">{headline}</p>}
+          {fields.length > 0 && (
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
+              {fields.map((field) => (
+                <div key={field.label} className="contents">
+                  <dt className="text-fog">{field.label}</dt>
+                  <dd className="truncate text-bone" title={field.value}>
+                    {field.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+      )}
+
+      {job && (
+        <details className="group rounded-[12px] border border-steel/40">
+          <summary className="flex min-h-10 cursor-pointer items-center px-4 text-[13px] font-semibold text-fog hover:text-bone">
+            Instructions the agent will follow
+          </summary>
+          <pre className="log-view max-h-72 overflow-auto rounded-b-[12px] border-t border-steel/40 px-4 py-3 whitespace-pre-wrap text-bone">
+            {job.prompt}
+          </pre>
+        </details>
+      )}
+
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {paused && <span className="mr-auto text-[12px] text-fog">The job is paused. Resume it to approve its runs.</span>}
+        <button type="button" className="btn btn-ghost" onClick={onDismiss}>
+          Dismiss
+        </button>
+        <button type="button" className="btn btn-primary" disabled={paused} onClick={onApprove}>
+          <Check aria-hidden className="size-3.5" />
+          Approve and start
+        </button>
+      </div>
+    </section>
   );
 }
 

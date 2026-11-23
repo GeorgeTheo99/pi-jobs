@@ -1,5 +1,6 @@
 import { History } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { RunList } from "@/components/RunList";
 import { ErrorNote, PageHeader, Skeleton } from "@/components/ui";
 import { api, isActive, type Run } from "@/lib/api";
@@ -16,7 +17,10 @@ const FILTERS: { id: string; label: string; match: (run: Run) => boolean }[] = [
 export function RunsPage() {
   const runs = usePoll(() => api.runs(undefined, 200), 3000);
   const jobs = usePoll(api.jobs, 15000);
-  const [filter, setFilter] = useState("all");
+  // The filter lives in the URL so other pages can link to, say, the runs needing approval.
+  const [params, setParams] = useSearchParams();
+  const filter = FILTERS.some((f) => f.id === params.get("filter")) ? params.get("filter")! : "all";
+  const setFilter = (id: string) => setParams(id === "all" ? {} : { filter: id }, { replace: true });
   const jobNames = useMemo(() => new Map(jobs.data?.map((job) => [job.id, job.name])), [jobs.data]);
   const visible = runs.data?.filter(FILTERS.find((f) => f.id === filter)!.match) ?? null;
 
