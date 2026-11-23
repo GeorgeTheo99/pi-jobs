@@ -49,6 +49,7 @@ interface ActiveRun {
 }
 
 export class QueueFullError extends Error {}
+export class JobPausedError extends Error {}
 
 export type TriggerResult = { run: Run } | { skipped: string };
 
@@ -198,6 +199,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   approve(runId: number): Run | null {
     const run = this.store.getRun(runId);
     if (run?.status !== "awaiting_approval") return null;
+    if (!this.store.getJob(run.jobId)?.enabled) throw new JobPausedError("Job is paused; resume it to approve its runs");
     this.store.updateRun(runId, { status: "queued" });
     this.note(runId, "Approved; queued");
     this.pump();
@@ -232,11 +234,13 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
           break;
         }
         try {
-          const started = this.trigger(latest, "watch", item.payload);
-          if ("run" in started) {
-            this.store.recordItem(job.id, item.id, started.run.id);
-            result.runs.push(started.run);
-          }
+          // The run and the record of its item are written together, so a crash can't start an item twice.
+          const started = this.store.transaction(() => {
+            const triggered = this.trigger(latest, "watch", item.payload);
+            if ("run" in triggered) this.store.recordItem(job.id, item.id, triggered.run.id);
+            return triggered;
+          });
+          if ("run" in started) result.runs.push(started.run);
         } catch (error) {
           if (!(error instanceof QueueFullError)) throw error;
           // Unrecorded items start runs at a later check, once the queue has room.
@@ -281,7 +285,8 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
         signalGroup(child.pid, "SIGKILL");
         if (failure) return reject(new Error(failure));
         if (code !== 0) {
-          const detail = stderr.trim().split("\n").at(-1);
+          // Only the start of the last line: it is shown in the UI and the server log.
+          const detail = stderr.trim().split("\n").at(-1)?.slice(0, 200);
           return reject(new Error(`The watch command exited with ${code === null ? "a signal" : `code ${code}`}${detail ? `: ${detail}` : ""}`));
         }
         resolve(Buffer.concat(stdout).toString("utf8"));

@@ -63,7 +63,13 @@ export function RunPage() {
               <button type="button" className="btn btn-ghost" onClick={() => void act(api.cancelRun)}>
                 Dismiss
               </button>
-              <button type="button" className="btn btn-primary" onClick={() => void act(api.approveRun)}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={job?.enabled === false}
+                title={job?.enabled === false ? "Resume the job to approve its runs" : undefined}
+                onClick={() => void act(api.approveRun)}
+              >
                 <Check aria-hidden className="size-3.5" />
                 Approve
               </button>

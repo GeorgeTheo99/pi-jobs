@@ -317,6 +317,11 @@ test("watch jobs: check now, approval, and updates from older clients keep the w
   assert.equal((await app.call("DELETE", `/api/jobs/${job.id}`, {})).status, 409, "a waiting run blocks deletion");
 
   assert.equal((await app.call("POST", "/api/runs/99999/approve", {})).status, 404);
+  const paused = (await app.call("PUT", `/api/jobs/${job.id}`, { ...job, enabled: false })).json;
+  assert.equal(paused.enabled, false);
+  const refused = await app.call("POST", `/api/runs/${waiting.id}/approve`, {});
+  assert.deepEqual([refused.status, refused.json.error], [409, "Job is paused; resume it to approve its runs"]);
+  await app.call("PUT", `/api/jobs/${job.id}`, { ...job, enabled: true });
   const approved = await app.call("POST", `/api/runs/${waiting.id}/approve`, {});
   assert.equal(approved.status, 200);
   assert.notEqual(approved.json.status, "awaiting_approval");

@@ -535,3 +535,24 @@ test("payloads from webhooks and watches are marked as outside data in the promp
     await ctx.cleanup();
   }
 });
+
+test("a paused job's waiting runs can't be approved; a failed watch item write leaves no run", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const { JobPausedError } = await import("../src/runner.ts");
+  const job = ctx.store.createJob(ctx.jobInput({ approveRuns: true }), null);
+  const waiting = ctx.runner.trigger(job, "webhook", null);
+  assert.ok("run" in waiting);
+  ctx.store.updateJob(job.id, { ...ctx.jobInput({ approveRuns: true }), enabled: false }, null);
+  assert.throws(() => ctx.runner.approve(waiting.run.id), JobPausedError);
+  assert.equal(ctx.store.getRun(waiting.run.id)!.status, "awaiting_approval");
+
+  const before = ctx.store.listRuns({ jobId: job.id }).length;
+  assert.throws(() =>
+    ctx.store.transaction(() => {
+      ctx.store.createRun(job.id, "watch", "pi", "{}");
+      throw new Error("crash between the run and its item");
+    }),
+  );
+  assert.equal(ctx.store.listRuns({ jobId: job.id }).length, before, "the run was rolled back");
+});

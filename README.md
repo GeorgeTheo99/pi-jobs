@@ -68,7 +68,7 @@ yourself.
 |---|---|
 | Schedule | Cron, in the server's local time zone. A fire is skipped while a run of the same job is queued or running. With **Catch up missed runs** (on by default), times missed while the server was down or the Mac asleep run once when it is back; off, they are skipped |
 | Webhook | `POST /api/hooks/<job id>` with `Authorization: Bearer <token>` (or `?token=`). The body becomes the payload: it replaces `{{payload}}` in the instructions, or is appended. Up to 20 queued runs per job |
-| Watch | A shell command the schedule runs in the repository instead of the agent, for sources pi-jobs can't receive webhooks from (a cloud inbox behind a firewall, say). Every line it prints is a JSON object with an `id` (string or number, up to 200 characters); each `id` not seen before starts one run with that line as the payload. **Check now** in the UI, or `POST /api/jobs/<id>/watch`, checks immediately. The command must exit 0 within 2 minutes and print at most 1 MiB; the job page shows the last check's error. Items the queue has no room for start at a later check. The first check starts runs for everything printed, so print only what should be handled |
+| Watch | A shell command the schedule runs in the repository instead of the agent, for sources pi-jobs can't receive webhooks from (a cloud inbox behind a firewall, say). Every line it prints is a JSON object with an `id` (string or number, up to 200 characters); each `id` not seen before starts one run with that line as the payload. **Check now** in the UI, or `POST /api/jobs/<id>/watch`, checks immediately. The command must exit 0 within 2 minutes and print at most 1 MiB; the job page shows the last check's error, with the start of the command's last stderr line, so don't print secrets there. Items the queue has no room for start at a later check. The first check starts runs for everything printed, so print only what should be handled |
 | Manual | **Run now** in the UI, or `POST /api/jobs/<id>/run` |
 
 ### Approval
@@ -77,8 +77,10 @@ With **Approve before running** on, runs from the schedule, webhook or watch are
 **Needs approval**. They start only after **Approve** on the run page (or
 `POST /api/runs/<id>/approve`); **Dismiss** (or `POST /api/runs/<id>/cancel`) cancels one without
 running. Manual runs and retries of an approved run start without asking. A run waiting for
-approval counts as queued: it holds back the job's schedule and its per-job queue limit. The Runs
-page filters to **Needs approval**.
+approval counts as queued: it holds back the job's schedule (a watch job's schedule still checks
+its command) and counts toward its per-job queue limit, and it waits through server restarts. A
+paused job's waiting runs can't be approved until it is resumed. The Runs page filters to **Needs
+approval**.
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 
@@ -190,7 +192,8 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 
 State lives in `~/.local/state/pi-jobs/`: `pi-jobs.db` (SQLite: jobs, runs, settings, token hashes),
 `runs/<id>.log`, and `worktrees/` for kept worktrees. Watch items seen are kept per job (`watch_items`). Restarting the server fails runs that were
-in progress (and retries them if their job allows). Queued runs resume.
+in progress (and retries them if their job allows). Queued runs resume, and runs waiting for
+approval keep waiting.
 
 | Variable | Default |
 |---|---|

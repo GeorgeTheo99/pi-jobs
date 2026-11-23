@@ -350,6 +350,19 @@ export class Store {
     this.db.prepare("UPDATE jobs SET last_fired_at = ? WHERE id = ?").run(now(), id);
   }
 
+  /** Runs `fn` in one SQLite transaction: all of its writes happen, or none. */
+  transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   setWatchResult(id: number, error: string | null): void {
     this.db.prepare("UPDATE jobs SET watch_checked_at = ?, watch_error = ? WHERE id = ?").run(now(), error, id);
   }

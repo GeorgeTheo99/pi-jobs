@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { AGENT_IDS, AGENT_PRESETS, buildArgv, commandProgram, isAgentId, resolveExecutable } from "./agents.ts";
 import type { Config } from "./config.ts";
-import { QueueFullError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
+import { JobPausedError, QueueFullError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
 import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
@@ -184,7 +184,7 @@ export function createApp(deps: AppDeps) {
       async (_req, [id]) => {
         const job = findJob(id);
         if (store.countRuns(job.id, ACTIVE_STATUSES) > 0) {
-          throw new HttpError(409, "Cancel this job's queued and running runs before deleting it");
+          throw new HttpError(409, "Cancel or dismiss this job's waiting, queued and running runs before deleting it");
         }
         const runIds = store.runIdsForJob(job.id);
         scheduler.remove(job.id);
@@ -254,9 +254,14 @@ export function createApp(deps: AppDeps) {
       /^\/api\/runs\/(\d+)\/approve$/,
       async (_req, [id]) => {
         if (!store.getRun(Number(id))) throw new HttpError(404, "Run not found");
-        const run = runner.approve(Number(id));
-        if (!run) throw new HttpError(409, "This run isn't waiting for approval");
-        return run;
+        try {
+          const run = runner.approve(Number(id));
+          if (!run) throw new HttpError(409, "This run isn't waiting for approval");
+          return run;
+        } catch (error) {
+          if (error instanceof JobPausedError) throw new HttpError(409, error.message);
+          throw error;
+        }
       },
     ],
     [
