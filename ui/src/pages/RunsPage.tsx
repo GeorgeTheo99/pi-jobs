@@ -28,9 +28,9 @@ export function RunsPage() {
     <>
       <PageHeader
         title="Runs"
-        meta="Every run, newest first. Runs with changes leave a branch in their repository."
+        meta="Every run, newest first, including retries and follow-ups. The Inbox groups them by item."
         actions={
-          <div role="radiogroup" aria-label="Filter runs" className="segmented">
+          <div role="radiogroup" aria-label="Filter runs" className="segmented max-w-full flex-nowrap overflow-x-auto">
             {FILTERS.map((f) => (
               <button key={f.id} type="button" role="radio" aria-checked={filter === f.id} onClick={() => setFilter(f.id)}>
                 {f.label}

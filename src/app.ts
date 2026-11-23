@@ -222,7 +222,15 @@ export function createApp(deps: AppDeps) {
       "GET",
       /^\/api\/runs$/,
       async (_req, _params, url) => {
-        return store.listRuns({ jobId: intParam(url, "jobId"), limit: intParam(url, "limit") });
+        const runs = store.listRuns({ jobId: intParam(url, "jobId"), limit: intParam(url, "limit") });
+        const merged = await runner.mergedRuns(runs);
+        // Lists carry the first line of each summary, not the whole report.
+        return runs.map(({ summary, ...run }) => ({
+          ...run,
+          summaryHeadline: summaryHeadline(summary),
+          summaryVerdict: summaryVerdict(summary),
+          merged: merged.has(run.id),
+        }));
       },
     ],
     [
@@ -231,7 +239,20 @@ export function createApp(deps: AppDeps) {
       async (_req, [id]) => {
         const run = store.getRun(Number(id));
         if (!run) throw new HttpError(404, "Run not found");
-        return run;
+        const merged = await runner.mergedRuns([run]);
+        return { ...run, summaryHeadline: summaryHeadline(run.summary), merged: merged.has(run.id) };
+      },
+    ],
+    [
+      "GET",
+      /^\/api\/runs\/(\d+)\/changes$/,
+      async (_req, [id], url) => {
+        const run = store.getRun(Number(id));
+        if (!run) throw new HttpError(404, "Run not found");
+        const job = findJob(String(run.jobId));
+        const changes = await runner.changes(job, run, url.searchParams.get("since") === "base");
+        if (!changes) throw new HttpError(404, "This run left no commits to show");
+        return changes;
       },
     ],
     [
@@ -263,6 +284,32 @@ export function createApp(deps: AppDeps) {
           if (error instanceof JobPausedError) throw new HttpError(409, error.message);
           throw error;
         }
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/runs\/(\d+)\/(replied|closed)$/,
+      async (req, [id, mark]) => {
+        const run = store.getRun(Number(id));
+        if (!run) throw new HttpError(404, "Run not found");
+        if (ACTIVE_STATUSES.includes(run.status)) throw new HttpError(409, "Wait for the run to finish");
+        const body = await readJson(req);
+        if (typeof body.value !== "boolean") throw new HttpError(400, "Send {\"value\": true} or {\"value\": false}");
+        const at = body.value ? new Date().toISOString() : null;
+        return store.updateRun(run.id, mark === "replied" ? { repliedAt: at } : { closedAt: at });
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/watches\/check$/,
+      async () => {
+        const jobs = store.listJobs().filter((job) => job.enabled && job.watchCommand);
+        const results = [];
+        for (const job of jobs) {
+          const result = await runner.watch(job);
+          results.push({ jobId: job.id, started: result.runs.length, error: result.error });
+        }
+        return results;
       },
     ],
     [
@@ -520,6 +567,27 @@ async function readBody(req: IncomingMessage): Promise<string> {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+/** A report's "Verdict: …" line, which the triage prompt asks for, so lists can show the verdict without the report. */
+export function summaryVerdict(summary: string | null): string | null {
+  const line = summary?.split("\n").find((l) => /^\W*verdict\W*:/i.test(l.replace(/\*\*|__|`/g, "").trim()));
+  return line ? line.trim().slice(0, 300) : null;
+}
+
+/** The first line of an agent's report, without Markdown emphasis or heading marks, for lists. */
+export function summaryHeadline(summary: string | null): string | null {
+  const line = summary
+    ?.split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !/^[-=*_`]{3,}$/.test(l));
+  if (!line) return null;
+  const plain = line
+    .replace(/^#+\s*/, "")
+    .replace(/^[-*]\s+/, "")
+    .replace(/\*\*|__|`/g, "")
+    .trim();
+  return plain.length > 200 ? `${plain.slice(0, 199)}…` : plain || null;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

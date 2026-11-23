@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CHANGED_EVENT } from "./api";
 
 type Interval<T> = number | null | ((latest: T | null) => number | null);
 
@@ -49,6 +50,15 @@ export function usePoll<T>(load: () => Promise<T>, interval: Interval<T>, deps: 
   }, [fetchOnce, ...deps]);
 
   return { data, error, refresh: fetchOnce, setData };
+}
+
+/** Calls `refresh` whenever the app changes something on the server. */
+export function useRefreshOnChange(refresh: () => unknown) {
+  useEffect(() => {
+    const onChange = () => void refresh();
+    window.addEventListener(CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(CHANGED_EVENT, onChange);
+  }, [refresh]);
 }
 
 /** Re-renders every `ms` so relative times stay fresh. */

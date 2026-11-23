@@ -1,7 +1,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFileSync, closeSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { readFile, rmdir } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -19,6 +19,12 @@ const MAX_ITEM_ID = 200;
 const MAX_PAYLOAD_IN_PROMPT = 20_000;
 /** How much of the earlier run's output a follow-up's prompt carries. */
 const MAX_PREVIOUS_OUTPUT = 12_000;
+/** How much of the agent's output a run keeps as its summary (the end, where agents report). */
+const MAX_SUMMARY = 20_000;
+/** The largest patch the run page shows. */
+const MAX_PATCH = 1024 * 1024;
+/** How long a base branch's tip is reused when checking which runs were merged. */
+const BASE_TIP_TTL_MS = 5_000;
 const PAYLOAD_TOKEN = "{{payload}}";
 /** The remote runs start from and push result branches to. */
 const REMOTE = "origin";
@@ -54,6 +60,28 @@ export class QueueFullError extends Error {}
 export class JobPausedError extends Error {}
 
 export type TriggerResult = { run: Run } | { skipped: string };
+
+/** One file a run changed. */
+export interface ChangedFile {
+  path: string;
+  /** The path before a rename or copy. */
+  oldPath: string | null;
+  /** git's status letter: A added, M modified, D deleted, R renamed, C copied, T type changed. */
+  status: string;
+  /** Null for binary files. */
+  additions: number | null;
+  deletions: number | null;
+}
+
+/** What a run changed, from `from` to its head commit. */
+export interface RunChanges {
+  from: string;
+  to: string;
+  files: ChangedFile[];
+  patch: string;
+  /** The patch was cut at MAX_PATCH bytes. */
+  truncated: boolean;
+}
 
 /** What one check of a job's watch command did. */
 export interface WatchResult {
@@ -195,6 +223,8 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   private stopping = false;
   /** Pumps again when the earliest waiting retry comes due. */
   private wakeTimer: NodeJS.Timeout | null = null;
+  private readonly mergedCache = new Map<string, boolean>();
+  private readonly baseTips = new Map<string, { tip: string | null; at: number }>();
   /** Jobs whose watch command is running, so checks of one job never overlap. */
   private readonly watching = new Map<number, Promise<WatchResult>>();
   readonly logDir: string;
@@ -709,11 +739,102 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   }
 
   private finish(runId: number, patch: Parameters<Store["updateRun"]>[1], retryable = false): Run {
-    const run = this.store.updateRun(runId, { ...patch, finishedAt: new Date().toISOString() });
+    const run = this.store.updateRun(runId, { ...patch, summary: this.readSummary(runId), finishedAt: new Date().toISOString() });
     this.note(runId, `Finished: ${run.status}`);
     if (retryable) this.retry(run);
     this.emit("finished", run);
     return run;
+  }
+
+  /**
+   * The files and patch a run changed: its own commits by default, or with `sinceBase`, everything
+   * since the job's base (a follow-up's earlier runs included). Null when the run left no commits.
+   */
+  async changes(job: Job, run: Run, sinceBase = false): Promise<RunChanges | null> {
+    if (!run.headCommit || !run.baseCommit || (run.commits ?? 0) === 0) return null;
+    if (!(await resolvesToCommit(job.repoPath, run.headCommit))) return null;
+    let from = run.baseCommit;
+    if (sinceBase) {
+      const tip = await this.baseTip(job);
+      if (tip) from = await git(job.repoPath, ["merge-base", tip, run.headCommit]).catch(() => run.baseCommit!);
+    }
+    const range = [from, run.headCommit];
+    const [names, counts] = await Promise.all([
+      git(job.repoPath, ["diff", "--name-status", "-M", "-z", ...range]),
+      git(job.repoPath, ["diff", "--numstat", "-M", "-z", ...range]),
+    ]);
+    const files = parseChangedFiles(names, counts);
+    let patch = "";
+    let truncated = false;
+    try {
+      patch = await gitRaw(job.repoPath, ["diff", "-M", "--no-color", "--no-ext-diff", ...range], MAX_PATCH * 4);
+    } catch {
+      truncated = true;
+    }
+    if (Buffer.byteLength(patch) > MAX_PATCH) {
+      patch = Buffer.from(patch).subarray(0, MAX_PATCH).toString("utf8");
+      truncated = true;
+    }
+    return { from, to: run.headCommit, files, patch, truncated };
+  }
+
+  /**
+   * Which of these runs' commits are already in their job's base branch (merged, so done), by run
+   * id. Runs without commits are left out. Uses the last fetched tip of origin/<base> where there is
+   * one, otherwise the local ref; never fetches.
+   */
+  async mergedRuns(runs: Run[]): Promise<Set<number>> {
+    const merged = new Set<number>();
+    for (const run of runs) {
+      if (!run.headCommit || (run.commits ?? 0) === 0 || ACTIVE_STATUSES.includes(run.status)) continue;
+      const job = this.store.getJob(run.jobId);
+      if (!job) continue;
+      const tip = await this.baseTip(job);
+      if (!tip) continue;
+      const key = `${job.repoPath}\0${run.headCommit}\0${tip}`;
+      let isMerged = this.mergedCache.get(key);
+      if (isMerged === undefined) {
+        isMerged = await git(job.repoPath, ["merge-base", "--is-ancestor", run.headCommit, tip]).then(
+          () => true,
+          () => false,
+        );
+        this.mergedCache.set(key, isMerged);
+      }
+      if (isMerged) merged.add(run.id);
+    }
+    return merged;
+  }
+
+  /** The job's base branch tip as last fetched (origin/<base>), else the local ref; cached briefly. */
+  private async baseTip(job: Job): Promise<string | null> {
+    const key = `${job.repoPath}\0${job.baseRef}`;
+    const cached = this.baseTips.get(key);
+    if (cached && cached.at > Date.now() - BASE_TIP_TTL_MS) return cached.tip;
+    const branch = job.baseRef.startsWith(`${REMOTE}/`) ? job.baseRef.slice(REMOTE.length + 1) : job.baseRef;
+    let tip: string | null = null;
+    for (const ref of [`refs/remotes/${REMOTE}/${branch}`, job.baseRef]) {
+      tip = await git(job.repoPath, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).catch(() => null);
+      if (tip) break;
+    }
+    this.baseTips.set(key, { tip, at: Date.now() });
+    return tip;
+  }
+
+  /** Saves the summaries of runs that finished before pi-jobs kept them. */
+  backfillSummaries(): void {
+    for (const id of this.store.runsWithoutSummary()) this.store.updateRun(id, { summary: this.readSummary(id) });
+  }
+
+  /** The end of what the agent printed, which is where agents put their final report. */
+  private readSummary(runId: number): string {
+    let log = "";
+    try {
+      log = readFileSync(this.logPath(runId), "utf8");
+    } catch {
+      return "";
+    }
+    const output = agentOutput(log);
+    return output.length > MAX_SUMMARY ? output.slice(-MAX_SUMMARY) : output;
   }
 
   private note(runId: number, message: string): void {
@@ -766,6 +887,42 @@ async function commandOutput(command: string, args: string[]): Promise<string> {
     if (!stdout) console.error(`${command} failed while cleaning up after a run:`, error);
     return stdout ?? "";
   }
+}
+
+/** Joins `git diff --name-status -z` and `--numstat -z` output (same order) into one list. */
+export function parseChangedFiles(names: string, counts: string): ChangedFile[] {
+  const files: ChangedFile[] = [];
+  const nameParts = names.split("\0");
+  for (let i = 0; i < nameParts.length - 1; ) {
+    const status = nameParts[i++]!;
+    if (!status) continue;
+    const letter = status[0]!;
+    if (letter === "R" || letter === "C") {
+      const oldPath = nameParts[i++]!;
+      files.push({ path: nameParts[i++]!, oldPath, status: letter, additions: null, deletions: null });
+    } else {
+      files.push({ path: nameParts[i++]!, oldPath: null, status: letter, additions: null, deletions: null });
+    }
+  }
+  // numstat -z: "added\tdeleted\tpath\0", or for renames "added\tdeleted\t\0old\0new\0".
+  const countParts = counts.split("\0");
+  let index = 0;
+  for (let i = 0; i < countParts.length && index < files.length; ) {
+    const head = countParts[i++]!;
+    if (!head) continue;
+    const [added, deleted, path] = head.split("\t");
+    if (path === "") i += 2;
+    const file = files[index++]!;
+    file.additions = added === "-" ? null : Number(added);
+    file.deletions = deleted === "-" ? null : Number(deleted);
+  }
+  return files;
+}
+
+/** Like git(), but keeps the output's whitespace (patches end with a newline) and takes a buffer size. */
+async function gitRaw(cwd: string, args: string[], maxBuffer: number): Promise<string> {
+  const { stdout } = await execFileP("git", ["-C", cwd, ...args], { maxBuffer, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  return stdout;
 }
 
 async function git(cwd: string, args: string[], timeout = 0): Promise<string> {

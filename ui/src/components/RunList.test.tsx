@@ -15,6 +15,8 @@ const base: Run = {
   notBefore: null,
   followUpOf: null,
   instructions: null,
+  repliedAt: null,
+  closedAt: null,
   branch: "pi-jobs/gateway-models/run-7",
   worktree: null,
   baseCommit: "abc",

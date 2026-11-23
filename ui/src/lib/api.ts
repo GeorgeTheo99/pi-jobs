@@ -27,6 +27,16 @@ export interface Run {
   followUpOf: number | null;
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
+  /** The agent's final report (Markdown). Only single-run responses carry it; lists have summaryHeadline. */
+  summary?: string | null;
+  /** The report's first line as plain text. */
+  summaryHeadline?: string | null;
+  /** The report's "Verdict: …" line, when it has one. */
+  summaryVerdict?: string | null;
+  /** The run's commits are in its job's base branch. Absent on runs returned by actions. */
+  merged?: boolean;
+  repliedAt: string | null;
+  closedAt: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -87,6 +97,22 @@ export interface JobDraft {
   enabled: boolean;
 }
 
+export interface ChangedFile {
+  path: string;
+  oldPath: string | null;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface RunChanges {
+  from: string;
+  to: string;
+  files: ChangedFile[];
+  patch: string;
+  truncated: boolean;
+}
+
 export interface WatchResult {
   runs: Run[];
   seen: number;
@@ -133,6 +159,8 @@ export function apiUrl(path: string): string {
 
 const TOKEN_KEY = "pi-jobs-token";
 export const AUTH_REQUIRED_EVENT = "pi-jobs:auth-required";
+/** Fired after any change the server accepted, so every view of runs (the nav badge too) refreshes at once. */
+export const CHANGED_EVENT = "pi-jobs:changed";
 
 export const tokenStore = {
   get: () => localStorage.getItem(TOKEN_KEY),
@@ -152,6 +180,7 @@ async function request<T>(method: string, path: string, body?: unknown, token = 
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
   if (!res.ok) throw new ApiError(res.status, data.error ?? `Request failed (${res.status})`, data.fields);
+  if (method !== "GET") window.dispatchEvent(new Event(CHANGED_EVENT));
   return data as T;
 }
 
@@ -185,6 +214,10 @@ export const api = {
   cancelRun: (id: number) => request<Run>("POST", `/api/runs/${id}/cancel`),
   approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
   followUp: (id: number, instructions: string) => request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions }),
+  changes: (id: number, sinceBase = false) => request<RunChanges>("GET", `/api/runs/${id}/changes${sinceBase ? "?since=base" : ""}`),
+  markReplied: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/replied`, { value }),
+  markClosed: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/closed`, { value }),
+  checkWatches: () => request<{ jobId: number; started: number; error: string | null }[]>("POST", "/api/watches/check"),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
   schedulePreview: (expression: string) =>

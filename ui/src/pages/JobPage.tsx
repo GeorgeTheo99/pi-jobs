@@ -1,7 +1,7 @@
 import { Play, RadioTower, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { RunList } from "@/components/RunList";
+import { ItemList } from "@/components/Items";
 import { CopyButton, ErrorNote, Field, PageHeader, Skeleton, Switch } from "@/components/ui";
 import {
   AGENT_IDS,
@@ -16,8 +16,9 @@ import {
   type SchedulePreview,
   type WatchResult,
 } from "@/lib/api";
-import { SCHEDULE_PRESETS, dateTime } from "@/lib/format";
-import { usePoll } from "@/lib/usePoll";
+import { SCHEDULE_PRESETS, dateTime, describeSchedule, relativeTime } from "@/lib/format";
+import { useNow, usePoll } from "@/lib/usePoll";
+import { useItems } from "@/lib/useItems";
 
 const EMPTY_DRAFT: JobDraft = {
   name: "",
@@ -62,7 +63,6 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const settings = usePoll(api.settings, null);
-  const runs = usePoll(() => (job ? api.runs(job.id, 15) : Promise.resolve([])), job ? 4000 : null, [job?.id]);
 
   const set = <K extends keyof JobDraft>(key: K, value: JobDraft[K]) => {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -101,7 +101,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
     if (!job || !window.confirm(`Delete "${job.name}" and its run history? Branches it created stay in the repo.`)) return;
     try {
       await api.deleteJob(job.id);
-      navigate("/");
+      navigate("/jobs");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -114,28 +114,24 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
       <PageHeader
         title={job ? job.name : "New job"}
         meta={
-          <Link to="/" className="hover:text-bone">
-            ← All jobs
+          <Link to="/jobs" className="hover:text-bone">
+            ← Jobs
           </Link>
         }
         actions={
           job && (
-            <>
-              <button type="button" className="btn btn-primary" onClick={() => void runNow()}>
-                <Play aria-hidden className="size-3.5" />
-                Run now
-              </button>
-              <button type="button" className="btn btn-danger" onClick={() => void remove()}>
-                <Trash2 aria-hidden className="size-3.5" />
-                Delete
-              </button>
-            </>
+            <button type="button" className="btn btn-ghost" onClick={() => void runNow()}>
+              <Play aria-hidden className="size-3.5" />
+              Run now
+            </button>
           )
         }
       />
 
-      <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <form onSubmit={(e) => void submit(e)} className="grid gap-7" noValidate>
+      <div className="grid gap-8">
+        {job && <JobItems job={job} />}
+        <EditSection open={!job}>
+        <form onSubmit={(e) => void submit(e)} className="grid max-w-[760px] gap-7" noValidate>
           <Section title="What">
             <Field label="Name" error={fields.name}>
               {(p) => (
@@ -246,7 +242,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 />
               )}
             </Field>
-            {job?.watchCommand && <WatchStatus job={job} onChecked={() => void runs.refresh()} />}
+            {job?.watchCommand && <WatchStatus job={job} />}
             <ToggleRow
               label="Approve before running"
               hint="Runs started by the schedule, webhook or watch wait as Needs approval until you approve or dismiss them. Manual runs start right away."
@@ -321,25 +317,63 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             </button>
             {savedAt && <span className="text-[13px] text-green">Saved</span>}
             {error && <span className="text-[13px] text-red">{error}</span>}
+            {job && (
+              <button type="button" className="btn btn-danger ml-auto" onClick={() => void remove()}>
+                <Trash2 aria-hidden className="size-3.5" />
+                Delete job
+              </button>
+            )}
           </div>
         </form>
-
-        {job && (
-          <aside className="grid gap-3 lg:sticky lg:top-9">
-            <h2 className="section-label">Recent runs</h2>
-            {runs.data === null ? (
-              <Skeleton />
-            ) : runs.data.length === 0 ? (
-              <p className="rounded-[14px] border border-dashed border-steel/60 px-4 py-6 text-center text-[13px] text-fog">
-                No runs yet. Use Run now to try the job.
-              </p>
-            ) : (
-              <RunList runs={runs.data} compact />
-            )}
-          </aside>
-        )}
+        </EditSection>
       </div>
     </>
+  );
+}
+
+/** The job's work, newest first, grouped into items like the Inbox. */
+function JobItems({ job }: { job: Job }) {
+  const { items, jobs, error } = useItems(4000, job.id);
+  const byId = jobs.size > 0 ? jobs : new Map([[job.id, job]]);
+  const now = useNow(30_000);
+  const facts = [
+    job.enabled ? null : "Paused",
+    job.watchCommand ? "Watches for new items" : null,
+    job.schedule ? `${describeSchedule(job.schedule)}${job.nextRunAt ? `, next ${relativeTime(job.nextRunAt, now)}` : ""}` : "No schedule",
+    job.watchCommand && job.watchCheckedAt ? `checked ${relativeTime(job.watchCheckedAt, now)}` : null,
+    job.webhookToken ? "Webhook on" : null,
+    job.approveRuns ? "Runs wait for approval" : null,
+    `${AGENT_LABELS[job.effectiveAgent]} on ${job.baseRef}`,
+  ].filter(Boolean);
+  return (
+    <section className="grid gap-3">
+      <p className="text-[13px] text-fog">{facts.join(" · ")}</p>
+      {job.watchError && <p className="text-[13px] text-red">Last watch check failed: {job.watchError}</p>}
+      <h2 className="section-label mt-3">Items</h2>
+      <ErrorNote error={error} />
+      {items === null ? (
+        <Skeleton />
+      ) : items.length === 0 ? (
+        <p className="rounded-[12px] border border-dashed border-steel/50 px-4 py-6 text-center text-[13px] text-fog">
+          No runs yet. Use Run now, or wait for the schedule.
+        </p>
+      ) : (
+        <ItemList items={items.slice(0, 30)} jobs={byId} />
+      )}
+    </section>
+  );
+}
+
+/** An existing job's settings stay folded away under its items; a new job's form is the page. */
+function EditSection({ open, children }: { open: boolean; children: ReactNode }) {
+  if (open) return <>{children}</>;
+  return (
+    <details className="group rounded-[12px] border border-steel/30">
+      <summary className="flex min-h-12 cursor-pointer items-center px-4 text-[14px] font-semibold text-bone hover:text-amber">
+        Edit job
+      </summary>
+      <div className="border-t border-steel/30 px-4 py-5 sm:px-5">{children}</div>
+    </details>
   );
 }
 
@@ -426,7 +460,7 @@ function ScheduleField({ value, error, onChange }: { value: string; error?: stri
   );
 }
 
-function WatchStatus({ job, onChecked }: { job: Job; onChecked: () => void }) {
+function WatchStatus({ job }: { job: Job }) {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<WatchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -435,7 +469,6 @@ function WatchStatus({ job, onChecked }: { job: Job; onChecked: () => void }) {
     setError(null);
     try {
       setResult(await api.checkWatch(job.id));
-      onChecked();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

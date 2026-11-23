@@ -39,7 +39,11 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
                 </div>
               </div>
               <div className={`min-w-0 truncate font-mono text-[12px] text-fog ${compact ? "hidden" : ""}`}>
-                {run.branch ? (
+                {run.summaryHeadline && !compact ? (
+                  <span className="font-sans text-bone/85" title={run.summaryHeadline}>
+                    {run.summaryHeadline}
+                  </span>
+                ) : run.branch ? (
                   <span className="inline-flex max-w-full items-center gap-1.5" title={run.branch}>
                     <GitBranch aria-hidden className="size-3.5 shrink-0" />
                     <span className="truncate">{run.branch}</span>

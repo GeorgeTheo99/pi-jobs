@@ -640,3 +640,61 @@ test("agentOutput keeps only what the agent printed; fences can't be closed by t
     await ctx.cleanup();
   }
 });
+
+test("a finished run keeps the agent's report as its summary; older runs are backfilled", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("commit");
+  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const run = await waitForFinish(ctx.runner, first.run.id);
+  assert.match(run.summary ?? "", /^fake agent \(commit\)/);
+  assert.doesNotMatch(run.summary ?? "", /\[pi-jobs /);
+
+  ctx.store.db.prepare("UPDATE runs SET summary = NULL WHERE id = ?").run(run.id);
+  const waiting = ctx.store.createRun(job.id, "watch", "pi", null, "awaiting_approval");
+  ctx.runner.backfillSummaries();
+  assert.match(ctx.store.getRun(run.id)!.summary ?? "", /^fake agent/);
+  assert.equal(ctx.store.getRun(waiting.id)!.summary, null, "unfinished runs are left alone");
+});
+
+test("changes lists a run's files and patch; mergedRuns sees commits that reached the base", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("commit");
+  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const earlier = await waitForFinish(ctx.runner, first.run.id);
+  ctx.useFakeAgent("edit");
+  const run = await waitForFinish(ctx.runner, ctx.runner.followUp(earlier, "More").id);
+
+  const own = await ctx.runner.changes(job, run);
+  assert.ok(own);
+  assert.deepEqual(
+    own.files.map((f) => [f.path, f.status]),
+    [["agent-output.txt", "A"]],
+  );
+  assert.ok((own.files[0]!.additions ?? 0) > 0);
+  assert.match(own.patch, /^diff --git a\/agent-output.txt/);
+  assert.equal(own.truncated, false);
+  const all = await ctx.runner.changes(job, run, true);
+  assert.deepEqual(all!.files.map((f) => f.path).sort(), ["agent-output.txt", "committed.txt"]);
+
+  assert.equal((await ctx.runner.mergedRuns([earlier, run])).size, 0);
+  git(ctx.repo, "merge", "-q", "--ff-only", earlier.branch!);
+  const merged = await new Promise<Set<number>>((resolve) => setTimeout(() => resolve(ctx.runner.mergedRuns([earlier, run])), 5_100));
+  assert.deepEqual([...merged], [earlier.id]);
+});
+
+test("parseChangedFiles pairs statuses with counts, including renames and binaries", async () => {
+  const { parseChangedFiles } = await import("../src/runner.ts");
+  const names = ["M", "a.txt", "R100", "old name.txt", "new name.txt", "A", "img.png", ""].join("\0");
+  const counts = ["3\t1\ta.txt", "0\t0\t", "old name.txt", "new name.txt", "-\t-\timg.png", ""].join("\0");
+  assert.deepEqual(parseChangedFiles(names, counts), [
+    { path: "a.txt", oldPath: null, status: "M", additions: 3, deletions: 1 },
+    { path: "new name.txt", oldPath: "old name.txt", status: "R", additions: 0, deletions: 0 },
+    { path: "img.png", oldPath: null, status: "A", additions: null, deletions: null },
+  ]);
+});

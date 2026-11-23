@@ -81,9 +81,9 @@ job's instructions. They start only after **Approve and start** on the run page 
 running. Manual runs and retries of an approved run start without asking. A run waiting for
 approval counts as queued: it holds back the job's schedule (a watch job's schedule still checks
 its command) and counts toward its per-job queue limit, and it waits through server restarts. A
-paused job's waiting runs can't be approved until it is resumed. The Runs page filters to **Needs
-approval** (`/runs?filter=approval`, linked from the sidebar's **to approve** count), and lists each
-item's title next to its job.
+paused job's waiting runs can't be approved until it is resumed. Waiting runs head the
+[Inbox](#the-inbox), with Approve and Dismiss on each card; the Runs page also filters to **Needs
+approval** (`/runs?filter=approval`).
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 
@@ -97,6 +97,30 @@ earlier run's instructions, payload and agent output (not its check's) as contex
 win where they differ. A follow-up is started by a person, like **Run now**: it needs no approval and
 runs while the job is paused (retries, as for any run, only while the job is on). Follow-ups can
 follow up on follow-ups.
+
+### The Inbox
+
+The home page groups runs into **items**: a run started by a trigger, with its retries and
+follow-ups (a support report's triage and the follow-up that implements it are one item). Its
+sections are **Waiting for you** (runs to approve, and proposals that need your decision, with
+**Implement it**, which opens the follow-up with that instruction filled in), **In progress**, **To
+review** (changes on a branch) and **Recent** (merged, closed, failed). **Check now** checks every
+watch at once (`POST /api/watches/check`). The nav badge counts what is waiting for you.
+
+A run page reads top to bottom: the item and its thread of runs, then **What the agent found**
+(the agent's final report, rendered), the **Suggested reply** to the reporter with **Copy reply**
+and a **Replied** switch, **Changes** (changed files with their diffs, for the run or the whole
+branch, and the git commands to review, merge and push), **Follow up** with preset instructions,
+and the log. The verdict (implemented, fixed, needs your decision, can't reproduce, duplicate, not
+actionable) comes from the report's first line or its `Verdict:` line, so job prompts that end with
+a summary like that get the most from it.
+
+Items are **Merged** once their branch's commits are in the job's base branch (`origin/<base>` as
+last fetched, else the local branch). **Close item** marks one done without merging. The API behind
+these: a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
+`summaryVerdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
+up to 1 MiB), and `POST /api/runs/<id>/replied` or `/closed` with `{"value": true|false}`. pi-jobs
+never sends replies, merges or pushes: those stay with you.
 
 Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
@@ -228,5 +252,5 @@ Vite and Tailwind 4 in a dark navy and amber theme.
 | `npm --prefix ui run dev` | Vite dev server, proxying `/api` to :8790 |
 | `npm run check` | Typecheck, server tests, UI lint and tests, UI build |
 
-Not built yet: merging or promoting result branches, notifications, and taking over a run
-interactively.
+Not built yet: notifications, and taking over a run interactively. Merging and pushing stay manual
+on purpose: pushing a base branch deploys some apps.

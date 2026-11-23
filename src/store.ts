@@ -68,6 +68,11 @@ export interface Run {
   followUpOf: number | null;
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
+  /** What the agent printed (its final report), saved when the run finishes; "" when it printed nothing. */
+  summary: string | null;
+  /** When the owner marked the item replied to, or closed it; null otherwise. */
+  repliedAt: string | null;
+  closedAt: string | null;
   branch: string | null;
   worktree: string | null;
   baseCommit: string | null;
@@ -177,12 +182,18 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "watch_error", "TEXT"],
   ["runs", "follow_up_of", "INTEGER"],
   ["runs", "instructions", "TEXT"],
+  ["runs", "summary", "TEXT"],
+  ["runs", "replied_at", "TEXT"],
+  ["runs", "closed_at", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
 
 const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   status: "status",
+  summary: "summary",
+  repliedAt: "replied_at",
+  closedAt: "closed_at",
   branch: "branch",
   worktree: "worktree",
   baseCommit: "base_commit",
@@ -254,6 +265,9 @@ function toRun(row: Row): Run {
     notBefore: (row.not_before as string | null) ?? null,
     followUpOf: num(row.follow_up_of),
     instructions: (row.instructions as string | null) ?? null,
+    summary: (row.summary as string | null) ?? null,
+    repliedAt: (row.replied_at as string | null) ?? null,
+    closedAt: (row.closed_at as string | null) ?? null,
     branch: row.branch as string | null,
     worktree: row.worktree as string | null,
     baseCommit: row.base_commit as string | null,
@@ -494,6 +508,15 @@ export class Store {
       this.db.prepare(`UPDATE runs SET ${sets} WHERE id = ?`).run(...entries.map(([, value]) => value), id);
     }
     return this.getRun(id)!;
+  }
+
+  /** Finished runs from before summaries were saved. */
+  runsWithoutSummary(): number[] {
+    const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
+    return this.db
+      .prepare(`SELECT id FROM runs WHERE summary IS NULL AND status NOT IN (${placeholders})`)
+      .all(...ACTIVE_STATUSES)
+      .map((row) => Number((row as { id: number }).id));
   }
 
   /** Runs that were mid-flight when the server stopped cannot be resumed; returns them, now failed. */

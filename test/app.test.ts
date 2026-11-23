@@ -368,3 +368,62 @@ test("follow-ups need a finished run and instructions", async (t) => {
   assert.equal(followUp.json.instructions, "Finish it");
   await waitForFinish(app.runner, followUp.json.id);
 });
+
+test("run views carry a summary headline and merge state; changes are served per run", async (t) => {
+  const { summaryHeadline } = await import("../src/app.ts");
+  assert.equal(summaryHeadline("\n**HS-1: feature idea, needs the owner's decision.**\n- more"), "HS-1: feature idea, needs the owner's decision.");
+  assert.equal(summaryHeadline("## Done\nx"), "Done");
+  assert.equal(summaryHeadline(""), null);
+  const { summaryVerdict } = await import("../src/app.ts");
+  assert.equal(summaryVerdict("**HS-1**\n- **Verdict:** can't reproduce\n- x"), "- **Verdict:** can't reproduce");
+  assert.equal(summaryVerdict("no verdict here"), null);
+
+  const app = await startApp(t);
+  app.useFakeAgent("commit");
+  const job = (await app.call("POST", "/api/jobs", { name: "Edit", repoPath: app.repo, prompt: "go" })).json;
+  const started = (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json;
+  await waitForFinish(app.runner, started.id);
+  const run = (await app.call("GET", `/api/runs/${started.id}`)).json;
+  assert.match(run.summaryHeadline, /^fake agent \(commit\)/);
+  assert.equal(run.merged, false);
+  const [listed] = (await app.call("GET", "/api/runs")).json;
+  assert.equal(listed.summary, undefined, "lists leave out the full report");
+  assert.equal(listed.summaryHeadline, run.summaryHeadline);
+  const changes = (await app.call("GET", `/api/runs/${started.id}/changes`)).json;
+  assert.deepEqual(changes.files.map((f: { path: string }) => f.path), ["committed.txt"]);
+
+  app.useFakeAgent("noop");
+  const empty = (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json;
+  await waitForFinish(app.runner, empty.id);
+  assert.equal((await app.call("GET", `/api/runs/${empty.id}/changes`)).status, 404);
+});
+
+test("runs can be marked replied and closed once finished; all watches can be checked at once", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("sleep");
+  const job = (await app.call("POST", "/api/jobs", { name: "Slow", repoPath: app.repo, prompt: "wait" })).json;
+  const run = (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json;
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/closed`, { value: true })).status, 409);
+  const finished = waitForFinish(app.runner, run.id);
+  await app.call("POST", `/api/runs/${run.id}/cancel`, {});
+  await finished;
+
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/replied`, {})).status, 400);
+  const replied = (await app.call("POST", `/api/runs/${run.id}/replied`, { value: true })).json;
+  assert.ok(replied.repliedAt);
+  const closed = (await app.call("POST", `/api/runs/${run.id}/closed`, { value: true })).json;
+  assert.ok(closed.closedAt);
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/closed`, { value: false })).json.closedAt, null);
+
+  await app.call("POST", "/api/jobs", {
+    name: "Inbox",
+    repoPath: app.repo,
+    prompt: "triage",
+    watchCommand: `echo '{"id": "a"}'`,
+    approveRuns: true,
+  });
+  const checks = (await app.call("POST", "/api/watches/check", {})).json;
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].started, 1);
+  assert.equal(checks[0].error, null);
+});

@@ -13,6 +13,7 @@ const runner = new Runner({ store, stateDir: config.stateDir });
 const interrupted = store.failInterruptedRuns();
 if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 for (const run of interrupted) runner.retry(run);
+runner.backfillSummaries();
 
 const fireSchedule = (jobId: number, missed: boolean) => {
   const job = store.getJob(jobId);
