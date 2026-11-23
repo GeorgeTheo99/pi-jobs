@@ -169,7 +169,8 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     return path.join(this.logDir, `${runId}.log`);
   }
 
-  trigger(job: Job, trigger: Trigger, payload: string | null = null): TriggerResult {
+  /** Queues a run. `pump: false` leaves starting it to the caller, e.g. after its transaction commits. */
+  trigger(job: Job, trigger: Trigger, payload: string | null = null, { pump = true } = {}): TriggerResult {
     if (trigger === "schedule" && this.store.countRuns(job.id, ACTIVE_STATUSES) > 0) {
       return { skipped: "a run of this job is already queued or running" };
     }
@@ -180,7 +181,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     const approval = job.approveRuns && trigger !== "manual";
     const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued");
     this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, agent: ${agent})`);
-    this.pump();
+    if (pump) this.pump();
     return { run: this.store.getRun(run.id)! };
   }
 
@@ -236,11 +237,14 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
         try {
           // The run and the record of its item are written together, so a crash can't start an item twice.
           const started = this.store.transaction(() => {
-            const triggered = this.trigger(latest, "watch", item.payload);
+            const triggered = this.trigger(latest, "watch", item.payload, { pump: false });
             if ("run" in triggered) this.store.recordItem(job.id, item.id, triggered.run.id);
             return triggered;
           });
-          if ("run" in started) result.runs.push(started.run);
+          if ("run" in started) {
+            this.pump();
+            result.runs.push(this.store.getRun(started.run.id)!);
+          }
         } catch (error) {
           if (!(error instanceof QueueFullError)) throw error;
           // Unrecorded items start runs at a later check, once the queue has room.
