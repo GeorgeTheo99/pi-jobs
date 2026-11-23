@@ -10,9 +10,10 @@ const OPEN_BY_DEFAULT_FILES = 3;
 const LONG_FILE_LINES = 400;
 
 /** A run's changed files with their diffs, and the git commands to review, merge and push the branch. */
-export function Changes({ run, job }: { run: Run; job: Job | null }) {
+export function Changes({ run, job, wholeBranch = false }: { run: Run; job: Job | null; wholeBranch?: boolean }) {
   const followUp = run.followUpOf !== null;
-  const [sinceBase, setSinceBase] = useState(false);
+  // On an item's page the whole branch is what gets merged, so it comes first.
+  const [sinceBase, setSinceBase] = useState(wholeBranch && followUp);
   // Results are kept with the request they answer, so a stale one is never shown for another.
   const request = `${run.id}:${run.headCommit}:${sinceBase}`;
   const [loaded, setLoaded] = useState<{ request: string; changes: RunChanges | null; error: Error | null } | null>(null);
@@ -42,8 +43,9 @@ export function Changes({ run, job }: { run: Run; job: Job | null }) {
         <h2 id="changes-title" className="section-heading">
           Changes
           <span className="ml-2 text-[13px] font-medium text-fog">
-            {commits} commit{commits === 1 ? "" : "s"}
-            {changes && ` · ${changes.files.length} file${changes.files.length === 1 ? "" : "s"}`}
+            {/* A run's commit count covers its own commits, not the whole branch's. */}
+            {!sinceBase && `${commits} commit${commits === 1 ? "" : "s"}`}
+            {changes && `${sinceBase ? "" : " · "}${changes.files.length} file${changes.files.length === 1 ? "" : "s"}`}
             {totals && (
               <>
                 {" · "}
@@ -54,11 +56,11 @@ export function Changes({ run, job }: { run: Run; job: Job | null }) {
         </h2>
         {followUp && (
           <div role="group" aria-label="Which changes" className="segmented">
-            <button type="button" aria-pressed={!sinceBase} onClick={() => setSinceBase(false)}>
-              This run
-            </button>
             <button type="button" aria-pressed={sinceBase} onClick={() => setSinceBase(true)}>
               Whole branch
+            </button>
+            <button type="button" aria-pressed={!sinceBase} onClick={() => setSinceBase(false)}>
+              Run #{run.id} only
             </button>
           </div>
         )}

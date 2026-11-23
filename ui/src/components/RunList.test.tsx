@@ -15,6 +15,9 @@ const base: Run = {
   notBefore: null,
   followUpOf: null,
   instructions: null,
+  mode: "change",
+  itemId: 7,
+  sessionId: null,
   repliedAt: null,
   closedAt: null,
   branch: "pi-jobs/gateway-models/run-7",
@@ -81,5 +84,5 @@ test("marks follow-ups with the run they continue", () => {
       <RunList runs={[{ ...base, id: 9, trigger: "manual", followUpOf: 7, instructions: "Implement it" }]} compact />
     </MemoryRouter>,
   );
-  expect(screen.getByText(/follow-up of #7/)).toBeTruthy();
+  expect(screen.getByText(/follow-up after #7/)).toBeTruthy();
 });

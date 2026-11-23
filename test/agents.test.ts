@@ -41,3 +41,14 @@ test("cron validation and preview", () => {
   const [first, second] = nextRuns("*/5 * * * *", 2);
   assert.ok(first && second && Date.parse(second) - Date.parse(first) === 5 * 60_000);
 });
+
+test("sessions apply to Pi only, right after the program", async () => {
+  const { supportsSessions, withSession } = await import("../src/agents.ts");
+  assert.equal(supportsSessions("pi -p {prompt}"), true);
+  assert.equal(supportsSessions("env A=1 /opt/bin/pi -p {prompt}"), true);
+  assert.equal(supportsSessions(AGENT_PRESETS.claude.command), false);
+  assert.equal(supportsSessions('pi "unterminated'), false);
+  assert.deepEqual(withSession(["env", "A=1", "pi", "-p", "x"], "s1"), ["env", "A=1", "pi", "--session-id", "s1", "-p", "x"]);
+  assert.deepEqual(withSession(["claude", "-p", "x"], "s1"), ["claude", "-p", "x"]);
+  assert.deepEqual(withSession(["pi", "-p", "x"], null), ["pi", "-p", "x"]);
+});

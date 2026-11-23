@@ -1,5 +1,7 @@
 export type AgentId = "pi" | "claude" | "codex";
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
+/** A change run may commit to a branch; an ask run only answers, and its checkout is discarded. */
+export type RunMode = "change" | "ask";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
 export const AGENT_LABELS: Record<AgentId, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
@@ -27,6 +29,11 @@ export interface Run {
   followUpOf: number | null;
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
+  mode: RunMode;
+  /** The first run of this run's item. */
+  itemId: number;
+  /** The agent session the item's runs continue; null for agents without sessions. */
+  sessionId: string | null;
   /** The agent's final report (Markdown). Only single-run responses carry it; lists have summaryHeadline. */
   summary?: string | null;
   /** The report's first line as plain text. */
@@ -213,7 +220,10 @@ export const api = {
   log: (id: number, offset: number) => request<LogChunk>("GET", `/api/runs/${id}/log?offset=${offset}`),
   cancelRun: (id: number) => request<Run>("POST", `/api/runs/${id}/cancel`),
   approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
-  followUp: (id: number, instructions: string) => request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions }),
+  followUp: (id: number, instructions: string, mode: RunMode = "change") =>
+    request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions, mode }),
+  /** Every run of the run's item, oldest first, with their reports. */
+  thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
   changes: (id: number, sinceBase = false) => request<RunChanges>("GET", `/api/runs/${id}/changes${sinceBase ? "?since=base" : ""}`),
   markReplied: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/replied`, { value }),
   markClosed: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/closed`, { value }),

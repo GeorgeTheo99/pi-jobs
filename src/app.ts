@@ -245,6 +245,23 @@ export function createApp(deps: AppDeps) {
     ],
     [
       "GET",
+      /^\/api\/runs\/(\d+)\/thread$/,
+      async (_req, [id]) => {
+        const run = store.getRun(Number(id));
+        if (!run) throw new HttpError(404, "Run not found");
+        // Every run of the item, oldest first, with their reports: the item's conversation.
+        const runs = store.itemRuns(run.itemId);
+        const merged = await runner.mergedRuns(runs);
+        return runs.map((r) => ({
+          ...r,
+          summaryHeadline: summaryHeadline(r.summary),
+          summaryVerdict: summaryVerdict(r.summary),
+          merged: merged.has(r.id),
+        }));
+      },
+    ],
+    [
+      "GET",
       /^\/api\/runs\/(\d+)\/changes$/,
       async (_req, [id], url) => {
         const run = store.getRun(Number(id));
@@ -325,8 +342,11 @@ export function createApp(deps: AppDeps) {
         if (instructions.length > MAX_INSTRUCTIONS) {
           throw new HttpError(400, "Fix the highlighted fields", { instructions: `Keep it under ${MAX_INSTRUCTIONS} characters` });
         }
+        if (body.mode !== undefined && body.mode !== "ask" && body.mode !== "change") {
+          throw new HttpError(400, "Fix the highlighted fields", { mode: 'Use "ask" or "change"' });
+        }
         try {
-          return runner.followUp(previous, instructions);
+          return runner.followUp(previous, instructions, body.mode === "ask" ? "ask" : "change");
         } catch (error) {
           if (error instanceof QueueFullError) throw new HttpError(429, error.message);
           throw error;

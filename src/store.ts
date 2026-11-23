@@ -5,6 +5,8 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { AGENT_IDS, AGENT_PRESETS, isAgentId, type AgentId } from "./agents.ts";
 
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
+/** A change run may commit to a branch; an ask run only answers, and its checkout is discarded. */
+export type RunMode = "change" | "ask";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 /** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
@@ -68,6 +70,11 @@ export interface Run {
   followUpOf: number | null;
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
+  mode: RunMode;
+  /** The first run of this one's item: a triggered run, with its retries and follow-ups. */
+  itemId: number;
+  /** The agent session the run used, which its item's later runs resume; null for agents without sessions. */
+  sessionId: string | null;
   /** What the agent printed (its final report), saved when the run finishes; "" when it printed nothing. */
   summary: string | null;
   /** When the owner marked the item replied to, or closed it; null otherwise. */
@@ -89,7 +96,7 @@ export interface Run {
 }
 
 export type RunPatch = Partial<
-  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "createdAt">
+  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "itemId" | "createdAt">
 >;
 
 export const DEFAULT_RETRIES = 2;
@@ -185,6 +192,9 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["runs", "summary", "TEXT"],
   ["runs", "replied_at", "TEXT"],
   ["runs", "closed_at", "TEXT"],
+  ["runs", "mode", "TEXT NOT NULL DEFAULT 'change'"],
+  ["runs", "item_id", "INTEGER"],
+  ["runs", "session_id", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -192,6 +202,7 @@ type Row = Record<string, SQLInputValue>;
 const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   status: "status",
   summary: "summary",
+  sessionId: "session_id",
   repliedAt: "replied_at",
   closedAt: "closed_at",
   branch: "branch",
@@ -266,6 +277,9 @@ function toRun(row: Row): Run {
     followUpOf: num(row.follow_up_of),
     instructions: (row.instructions as string | null) ?? null,
     summary: (row.summary as string | null) ?? null,
+    mode: row.mode === "ask" ? "ask" : "change",
+    itemId: Number(row.item_id ?? row.id),
+    sessionId: (row.session_id as string | null) ?? null,
     repliedAt: (row.replied_at as string | null) ?? null,
     closedAt: (row.closed_at as string | null) ?? null,
     branch: row.branch as string | null,
@@ -294,6 +308,24 @@ export class Store {
     for (const [table, column, definition] of ADDED_COLUMNS) {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
       if (!columns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+    this.transaction(() => this.backfillItems());
+    // After the columns exist: databases from before items get item_id from ALTER TABLE above.
+    this.db.exec("CREATE INDEX IF NOT EXISTS runs_by_item ON runs(item_id, id)");
+  }
+
+  /** Gives runs from before items were stored the item of the run they retry or follow up on. */
+  private backfillItems(): void {
+    const rows = this.db
+      .prepare("SELECT id, follow_up_of, retry_of, item_id FROM runs ORDER BY id")
+      .all() as { id: number; follow_up_of: number | null; retry_of: number | null; item_id: number | null }[];
+    const items = new Map<number, number>();
+    const update = this.db.prepare("UPDATE runs SET item_id = ? WHERE id = ?");
+    for (const row of rows) {
+      const parent = row.follow_up_of ?? row.retry_of;
+      const item = row.item_id ?? (parent !== null ? (items.get(parent) ?? parent) : row.id);
+      items.set(row.id, item);
+      if (row.item_id === null) update.run(item, row.id);
     }
   }
 
@@ -420,17 +452,19 @@ export class Store {
     const result = this.db
       .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(jobId, trigger, status, agent, payload, now());
-    return this.getRun(Number(result.lastInsertRowid))!;
+    const id = Number(result.lastInsertRowid);
+    this.db.prepare("UPDATE runs SET item_id = id WHERE id = ?").run(id);
+    return this.getRun(id)!;
   }
 
-  /** Queues a run that continues `of` (a finished run) with new instructions, keeping its payload. */
-  createFollowUp(of: Run, agent: AgentId, instructions: string): Run {
+  /** Queues a run that continues `of` (a finished run) with new instructions, keeping its payload and item. */
+  createFollowUp(of: Run, agent: AgentId, instructions: string, mode: RunMode = "change"): Run {
     const result = this.db
       .prepare(
-        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, created_at)
-         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, item_id, created_at)
+         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(of.jobId, agent, of.payload, of.id, instructions, now());
+      .run(of.jobId, agent, of.payload, of.id, instructions, mode, of.itemId, now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
@@ -438,8 +472,9 @@ export class Store {
   createRetry(of: Run, notBefore: Date): Run {
     const result = this.db
       .prepare(
-        `INSERT INTO runs (job_id, trigger, status, agent, payload, attempt, retry_of, not_before, follow_up_of, instructions, created_at)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, attempt, retry_of, not_before, follow_up_of, instructions,
+           mode, item_id, created_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         of.jobId,
@@ -451,9 +486,27 @@ export class Store {
         notBefore.toISOString(),
         of.followUpOf,
         of.instructions,
+        of.mode,
+        of.itemId,
         now(),
       );
     return this.getRun(Number(result.lastInsertRowid))!;
+  }
+
+  /** Runs that kept their worktree at this path. */
+  runsWithWorktree(worktree: string): Run[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE worktree = ?")
+      .all(worktree)
+      .map((r) => toRun(r as Row));
+  }
+
+  /** Every run of an item, oldest first. */
+  itemRuns(itemId: number): Run[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE item_id = ? ORDER BY id")
+      .all(itemId)
+      .map((r) => toRun(r as Row));
   }
 
   getRun(id: number): Run | null {

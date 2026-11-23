@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { git, setup, waitForFinish } from "./helpers.ts";
+import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
 
 test("a successful run commits the agent's changes to a branch and removes the worktree", async (t) => {
   const ctx = setup();
@@ -697,4 +697,141 @@ test("parseChangedFiles pairs statuses with counts, including renames and binari
     { path: "new name.txt", oldPath: "old name.txt", status: "R", additions: 0, deletions: 0 },
     { path: "img.png", oldPath: null, status: "A", additions: null, deletions: null },
   ]);
+});
+
+test("a question answers from the item's latest commits and keeps nothing", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("commit");
+  const job = ctx.store.createJob(ctx.jobInput({ checkCommand: "exit 1" }), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const changed = await waitForFinish(ctx.runner, first.run.id);
+  assert.equal(changed.commits, 1);
+
+  ctx.useFakeAgent("edit");
+  const ask = await waitForFinish(ctx.runner, ctx.runner.followUp(changed, "Why this design?", "ask").id);
+  assert.equal(ask.status, "succeeded", ask.error ?? "");
+  assert.equal(ask.mode, "ask");
+  assert.equal(ask.branch, null);
+  assert.equal(ask.commits, 0);
+  assert.equal(ask.worktree, null);
+  assert.equal(ask.checkStatus, null, "a question skips the check command");
+  assert.equal(ask.baseCommit, changed.headCommit, "it sees the item's latest commits");
+  assert.match(ask.summary ?? "", /fake agent \(edit\)/);
+  assert.equal(git(ctx.repo, "branch", "--list", `pi-jobs/*/run-${ask.id}`), "");
+  assert.equal(ctx.store.getRun(changed.id)!.worktree, null, "the item's next run reused the failed run's kept worktree directory");
+  assert.equal(existsSync(path.join(ctx.root, "state", "worktrees", `job-${job.id}`)), false, "and the question removed its checkout");
+
+  // A change after a question builds on the last commits, through the question.
+  const next = await waitForFinish(ctx.runner, ctx.runner.followUp(ask, "Now do it", "change").id);
+  assert.equal(next.baseCommit, changed.headCommit);
+  const prompt = git(ctx.repo, "show", `${next.branch}:agent-output.txt`);
+  assert.match(prompt, /^Now do it/);
+  assert.match(prompt, /based on run #\d+'s result/);
+  assert.equal(next.itemId, changed.id);
+});
+
+test("an item's runs share one Pi session, resumed by id in the same directory", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const bin = path.join(ctx.root, "bin");
+  const sessions = path.join(ctx.root, "sessions.txt");
+  execFileSync("mkdir", ["-p", bin]);
+  writeFileSync(
+    path.join(bin, "pi"),
+    `#!/bin/sh\nif [ "$1" = "--session-id" ]; then echo "$2 $(pwd)" >> '${sessions}'; shift 2; fi\nexec '${process.execPath}' '${FAKE}' "$@"\n`,
+  );
+  chmodSync(path.join(bin, "pi"), 0o755);
+  const settings = ctx.store.getSettings();
+  settings.agents.pi.command = `${path.join(bin, "pi")} edit {prompt}`;
+  ctx.store.saveSettings(settings);
+
+  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const root = await waitForFinish(ctx.runner, first.run.id);
+  const ask = await waitForFinish(ctx.runner, ctx.runner.followUp(root, "Question?", "ask").id);
+  const change = await waitForFinish(ctx.runner, ctx.runner.followUp(ask, "Change it", "change").id);
+
+  assert.ok(root.sessionId);
+  assert.equal(ask.sessionId, root.sessionId);
+  assert.equal(change.sessionId, root.sessionId);
+  const calls = readFileSync(sessions, "utf8").trim().split("\n");
+  assert.equal(calls.length, 3);
+  assert.equal(new Set(calls).size, 1, "same session id and same directory each time");
+  assert.match(calls[0]!, new RegExp(`job-${job.id}/item-${root.id}$`));
+
+  const prompt = git(ctx.repo, "show", `${change.branch}:agent-output.txt`);
+  assert.match(prompt, /continues your earlier conversation/);
+  assert.doesNotMatch(prompt, /Everything below is context/, "a resumed session needs no context block");
+  assert.match(readFileSync(ctx.runner.logPath(change.id), "utf8"), /resuming session/);
+
+  const other = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in other);
+  const unrelated = await waitForFinish(ctx.runner, other.run.id);
+  assert.notEqual(unrelated.sessionId, root.sessionId, "another item gets its own session");
+});
+
+test("question prompts forbid changes; Pi's new-session note stays out of the report", async () => {
+  const { agentOutput, buildPrompt } = await import("../src/runner.ts");
+  assert.equal(
+    agentOutput("[pi-jobs x] Starting pi: pi\nWarning: No project session found with id 'ab'; creating a new session with that id.\nAnswer\n[pi-jobs x] Agent exited with code 0"),
+    "Answer",
+  );
+  const ctx = setup();
+  try {
+    const job = ctx.store.createJob(ctx.jobInput(), null);
+    const root = ctx.store.createRun(job.id, "manual", "pi", null);
+    const ask = ctx.store.createFollowUp(root, "pi", "Why?", "ask");
+    const prompt = buildPrompt(job, ask, null, "0123456789abcdef", null, { baseLabel: `run #${root.id}` });
+    assert.match(prompt, /^Why\?/);
+    assert.match(prompt, /do not change anything/);
+    assert.match(prompt, /temporary checkout/);
+    assert.doesNotMatch(prompt, /committed to the branch/);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test("reusing an item's directory first commits what a kept worktree left uncommitted", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("fail");
+  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const failed = await waitForFinish(ctx.runner, first.run.id);
+  assert.ok(failed.worktree);
+  // Work the agent never got to commit, as after a server restart, or the owner's own edits.
+  writeFileSync(path.join(failed.worktree, "unsaved.txt"), "keep me\n");
+
+  ctx.useFakeAgent("noop");
+  const next = await waitForFinish(ctx.runner, ctx.runner.followUp(failed, "Carry on").id);
+  assert.equal(next.status, "succeeded", next.error ?? "");
+  assert.equal(git(ctx.repo, "show", `${failed.branch}:unsaved.txt`), "keep me");
+  const kept = ctx.store.getRun(failed.id)!;
+  assert.equal(kept.worktree, null);
+  assert.equal(kept.commits, 2);
+  assert.equal(next.baseCommit, kept.headCommit, "and the follow-up builds on it");
+});
+
+test("a retry starts a new Pi session instead of resuming the failed attempt's", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const bin = path.join(ctx.root, "bin");
+  execFileSync("mkdir", ["-p", bin]);
+  writeFileSync(path.join(bin, "pi"), `#!/bin/sh\n[ "$1" = "--session-id" ] && shift 2\nexec '${process.execPath}' '${FAKE}' "$@"\n`);
+  chmodSync(path.join(bin, "pi"), 0o755);
+  const settings = ctx.store.getSettings();
+  settings.agents.pi.command = `${path.join(bin, "pi")} fail {prompt}`;
+  ctx.store.saveSettings(settings);
+  const job = ctx.store.createJob(ctx.jobInput({ retries: 1 }), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const failed = await waitForFinish(ctx.runner, first.run.id);
+  const retry = ctx.store.listRuns({ jobId: job.id }).find((r) => r.retryOf === failed.id)!;
+  const retried = await waitForFinish(ctx.runner, retry.id);
+  assert.ok(failed.sessionId && retried.sessionId);
+  assert.notEqual(retried.sessionId, failed.sessionId);
 });

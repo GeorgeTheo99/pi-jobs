@@ -350,6 +350,41 @@
     border-color: rgb(65 90 119 / 0.4);
   }
 
+  /* The item conversation: the owner's messages and the agent's replies. */
+  .turn-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-fog);
+  }
+  .turn-you {
+    display: grid;
+    gap: 6px;
+    justify-self: end;
+    max-width: min(100%, 64ch);
+    padding: 12px 14px;
+    border-radius: 12px 12px 4px 12px;
+    background: var(--color-channel);
+  }
+  .turn-agent {
+    display: grid;
+    gap: 10px;
+    padding-left: 14px;
+    border-left: 2px solid rgb(65 90 119 / 0.45);
+  }
+  .turn-selected {
+    border-left-color: var(--color-amber);
+  }
+  .turn-collapsed {
+    max-height: 7.5em;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, black 55%, transparent);
+  }
+
   .diff-view {
     background: var(--color-abyss);
   }

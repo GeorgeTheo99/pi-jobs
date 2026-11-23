@@ -82,6 +82,28 @@ export function commandProgram(argv: string[]): string {
   return first;
 }
 
+/**
+ * Whether a command runs an agent whose sessions pi-jobs can name and resume. Pi's `--session-id`
+ * opens the session with that ID in the working directory, creating it the first time, so an
+ * item's runs, which share a working directory, continue one conversation.
+ */
+export function supportsSessions(command: string): boolean {
+  try {
+    return path.basename(commandProgram(splitCommand(command))) === "pi";
+  } catch {
+    return false;
+  }
+}
+
+/** Adds the session to an agent's argv, right after the program, when the agent supports sessions. */
+export function withSession(argv: string[], sessionId: string | null): string[] {
+  if (!sessionId) return argv;
+  const program = commandProgram(argv);
+  if (path.basename(program) !== "pi") return argv;
+  const index = argv.indexOf(program);
+  return [...argv.slice(0, index + 1), "--session-id", sessionId, ...argv.slice(index + 1)];
+}
+
 /** Resolves an executable the way spawn() will, returning its absolute path or null. */
 export async function resolveExecutable(
   name: string,

@@ -174,7 +174,7 @@ export function WaitingCard({ item, job, onChanged }: { item: Item; job: Job | u
                 type="button"
                 className="btn btn-ghost"
                 disabled={busy !== null}
-                onClick={() => void act("close", () => api.markClosed(run.id, true))}
+                onClick={() => void act("close", () => api.markClosed(item.latestWork.id, true))}
               >
                 {busy === "close" ? "Closing…" : "Close"}
               </button>

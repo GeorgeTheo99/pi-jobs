@@ -12,6 +12,8 @@ export interface Item {
   runs: Run[];
   /** The newest run. */
   latest: Run;
+  /** The newest run that isn't a question: what closing, reopening and retrying act on. */
+  latestWork: Run;
   state: ItemState;
   verdict: Verdict;
   /** The newest run that left commits. */
@@ -58,7 +60,9 @@ export function groupItems(runs: Run[]): Item[] {
 function toItem(runs: Run[]): Item {
   const root = runs[0]!;
   const latest = runs.at(-1)!;
-  const finished = [...runs].reverse().find((run) => !isOpen(run)) ?? null;
+  // Questions answer; they don't change what the item came to, so its verdict and state skip them.
+  const work = runs.filter((run) => run.mode !== "ask");
+  const finished = [...work].reverse().find((run) => !isOpen(run)) ?? null;
   const withChanges = [...runs].reverse().find((run) => (run.commits ?? 0) > 0) ?? null;
   // Lists carry the report's headline and verdict line, not the whole report.
   const verdict = parseVerdict(
@@ -68,7 +72,8 @@ function toItem(runs: Run[]): Item {
     root,
     runs,
     latest,
-    state: stateOf(runs, latest, verdict, withChanges),
+    latestWork: work.at(-1) ?? latest,
+    state: stateOf(runs, work.at(-1) ?? latest, verdict, withChanges),
     verdict,
     withChanges,
     replied: runs.some((run) => run.repliedAt !== null),
@@ -77,13 +82,13 @@ function toItem(runs: Run[]): Item {
 
 const isOpen = (run: Run) => run.status === "awaiting_approval" || run.status === "queued" || run.status === "running";
 
-function stateOf(runs: Run[], latest: Run, verdict: Verdict, withChanges: Run | null): ItemState {
+function stateOf(runs: Run[], latestWork: Run, verdict: Verdict, withChanges: Run | null): ItemState {
   if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
   if (runs.some(isOpen)) return "running";
   if (withChanges?.merged) return "merged";
-  if (latest.closedAt !== null) return "closed";
-  if (latest.status === "failed" || latest.status === "timed_out") return "failed";
-  if (latest.status === "canceled") return "closed";
+  if (latestWork.closedAt !== null) return "closed";
+  if (latestWork.status === "failed" || latestWork.status === "timed_out") return "failed";
+  if (latestWork.status === "canceled") return "closed";
   if (verdict === "needs_decision") return "decision";
   if (verdict === "cant_reproduce" || verdict === "duplicate" || verdict === "not_actionable") return "closed";
   if (withChanges) return "review";

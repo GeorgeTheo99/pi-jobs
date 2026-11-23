@@ -427,3 +427,23 @@ test("runs can be marked replied and closed once finished; all watches can be ch
   assert.equal(checks[0].started, 1);
   assert.equal(checks[0].error, null);
 });
+
+test("follow-ups take a mode; a run's thread lists its item's runs with their reports", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("noop");
+  const job = (await app.call("POST", "/api/jobs", { name: "Thread", repoPath: app.repo, prompt: "go" })).json;
+  const root = (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json;
+  await waitForFinish(app.runner, root.id);
+  const bad = await app.call("POST", `/api/runs/${root.id}/follow-up`, { instructions: "Why?", mode: "chat" });
+  assert.equal(bad.status, 400);
+  assert.ok(bad.json.fields.mode);
+  const ask = (await app.call("POST", `/api/runs/${root.id}/follow-up`, { instructions: "Why?", mode: "ask" })).json;
+  assert.equal(ask.mode, "ask");
+  assert.equal(ask.itemId, root.id);
+  await waitForFinish(app.runner, ask.id);
+  const thread = (await app.call("GET", `/api/runs/${ask.id}/thread`)).json;
+  assert.deepEqual(thread.map((r: Run) => r.id), [root.id, ask.id]);
+  assert.match(thread[1].summary, /fake agent \(noop\)/);
+  assert.equal(typeof thread[0].merged, "boolean");
+  assert.equal((await app.call("GET", "/api/runs/999/thread")).status, 404);
+});

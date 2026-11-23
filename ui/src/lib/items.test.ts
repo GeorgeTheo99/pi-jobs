@@ -13,6 +13,9 @@ const run = (overrides: Partial<Run>): Run => ({
   notBefore: null,
   followUpOf: null,
   instructions: null,
+  mode: "change",
+  itemId: 1,
+  sessionId: null,
   repliedAt: null,
   closedAt: null,
   branch: null,
@@ -58,6 +61,24 @@ test("item states: decision, merged, closed, failed", () => {
   expect(state([run({ summaryHeadline: "HS-1 triaged", summaryVerdict: "- **Verdict:** needs the owner's decision" })])).toBe(
     "decision",
   );
+});
+
+test("questions don't change an item's verdict or state", () => {
+  const items = groupItems([
+    run({ id: 1, summaryHeadline: "HS-1: feature idea, needs the owner's decision." }),
+    run({ id: 2, followUpOf: 1, mode: "ask", summaryHeadline: "It is fixed in two places." }),
+    run({ id: 3, followUpOf: 2, mode: "ask", status: "failed" }),
+  ]);
+  expect(items).toHaveLength(1);
+  expect(items[0]!.verdict).toBe("needs_decision");
+  expect(items[0]!.state).toBe("decision");
+
+  const closed = groupItems([
+    run({ id: 1, closedAt: "2026-11-22T00:00:00Z" }),
+    run({ id: 2, followUpOf: 1, mode: "ask" }),
+  ]);
+  expect(closed[0]!.state).toBe("closed");
+  expect(closed[0]!.latestWork.id).toBe(1);
 });
 
 test("itemFields reads a report's reference and kind", () => {

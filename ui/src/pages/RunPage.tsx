@@ -1,29 +1,37 @@
-import { Check, CornerDownRight, Square } from "lucide-react";
+import { Check, MessageCircleQuestion, Square, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Changes } from "@/components/Changes";
 import { ItemPill } from "@/components/Items";
 import { Markdown } from "@/components/Markdown";
-import { CopyButton, ErrorNote, Field, Skeleton, StatusPill, Switch } from "@/components/ui";
-import { AGENT_LABELS, ApiError, TRIGGER_LABELS, api, isActive, type Job, type Run } from "@/lib/api";
-import { dateTime, duration, repoName, summarizePayload } from "@/lib/format";
+import { CopyButton, ErrorNote, Skeleton, StatusPill, Switch } from "@/components/ui";
+import { AGENT_LABELS, ApiError, TRIGGER_LABELS, api, isActive, type Job, type Run, type RunMode } from "@/lib/api";
+import { dateTime, duration, relativeTime, repoName, summarizePayload } from "@/lib/format";
 import { groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
 import { VERDICT_LABELS, parseVerdict, splitReply, type Verdict } from "@/lib/report";
-import { useNow, usePoll } from "@/lib/usePoll";
+import { useNow, usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
 const MAX_LOG_CHARS = 2_000_000;
 
+/**
+ * An item's page: the conversation of its runs (the triggered run, the owner's questions and change
+ * requests, the agent's answers and reports), its changes, and a composer for the next message. The
+ * run in the URL is the selected one, whose details and log are at the bottom.
+ */
 export function RunPage() {
   const runId = Number(useParams().id);
-  const { data: run, error, refresh } = usePoll(
-    () => api.run(runId),
-    (latest) => (latest && !isActive(latest.status) ? null : 2000),
+  const thread = usePoll(
+    () => api.thread(runId),
+    (latest) => (latest?.some((r) => isActive(r.status)) ? 2000 : 8000),
     [runId],
   );
+  useRefreshOnChange(thread.refresh);
+  const runs = thread.data;
+  const run = runs?.find((r) => r.id === runId) ?? null;
+  const item = useMemo(() => (runs && runs.length > 0 ? (groupItems(runs)[0] ?? null) : null), [runs]);
   const [job, setJob] = useState<Job | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const jobId = run?.jobId;
-  const jobRuns = usePoll(() => (jobId === undefined ? Promise.resolve(null) : api.runs(jobId, 200)), 5000, [jobId]);
 
   useEffect(() => {
     if (jobId === undefined) return;
@@ -37,140 +45,112 @@ export function RunPage() {
     };
   }, [jobId]);
 
-  const item = useMemo(() => {
-    if (!jobRuns.data || !run) return null;
-    // Lists leave out full summaries; this run's own copy has its summary.
-    const runs = jobRuns.data.map((r) => (r.id === run.id ? { ...r, ...run } : r));
-    if (!runs.some((r) => r.id === run.id)) runs.push(run);
-    return groupItems(runs).find((i) => i.runs.some((r) => r.id === run.id)) ?? null;
-  }, [jobRuns.data, run]);
-
   const act = async (action: () => Promise<unknown>) => {
     setActionError(null);
     try {
       await action();
-      await Promise.all([refresh(), jobRuns.refresh()]);
+      await thread.refresh();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  if (error && !run) return <ErrorNote error={error} />;
-  if (!run) return <Skeleton rows={4} />;
+  if (thread.error && !run) return <ErrorNote error={thread.error} />;
+  if (!run || !item) return <Skeleton rows={4} />;
 
-  const active = isActive(run.status);
-  const { report, reply } = splitReply(run.summary ?? "");
-  const hasChanges = (run.commits ?? 0) > 0 && run.branch !== null;
-  const itemFinished = item !== null && !item.runs.some((r) => isActive(r.status));
-  const failedSilently = (run.status === "failed" || run.status === "timed_out") && !report;
-  const log = (
-    <Disclosure key={`log-${run.id}`} title="Log" defaultOpen={active || failedSilently}>
-      <LogView key={run.id} runId={run.id} live={active} />
-    </Disclosure>
-  );
-  const newer = item && item.latest.id !== run.id ? item.latest : null;
+  const activeRun = item.runs.find((r) => isActive(r.status) && r.status !== "awaiting_approval") ?? null;
+  const waiting = item.runs.find((r) => r.status === "awaiting_approval") ?? null;
+  const itemFinished = !item.runs.some((r) => isActive(r.status));
+  const replyRun = [...item.runs].reverse().find((r) => !isActive(r.status) && splitReply(r.summary ?? "").reply !== null);
+  const reply = replyRun ? splitReply(replyRun.summary ?? "").reply : null;
+  const selectedActive = isActive(run.status);
+  const selectedSilent = (run.status === "failed" || run.status === "timed_out") && !run.summary;
 
   return (
     <article className="mx-auto grid max-w-[880px] gap-8">
-      <RunHeader
-        run={run}
-        job={job}
+      <ItemHeader
         item={item}
+        job={job}
         actions={
           <>
-            {active && run.status !== "awaiting_approval" && (
-              <button type="button" className="btn btn-danger" onClick={() => void act(() => api.cancelRun(run.id))}>
+            {activeRun && (
+              <button type="button" className="btn btn-danger" onClick={() => void act(() => api.cancelRun(activeRun.id))}>
                 <Square aria-hidden className="size-3.5" />
-                {run.status === "queued" ? "Cancel" : "Stop run"}
+                {activeRun.status === "queued" ? "Cancel" : "Stop"}
               </button>
             )}
             {itemFinished && item.state !== "merged" && (
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => void act(() => api.markClosed(item.latest.id, item.latest.closedAt === null))}
+                onClick={() => void act(() => api.markClosed(item.latestWork.id, item.latestWork.closedAt === null))}
               >
-                {item.latest.closedAt === null ? "Close item" : "Reopen item"}
+                {item.latestWork.closedAt === null ? "Close item" : "Reopen item"}
               </button>
             )}
           </>
         }
       />
 
-      {newer && (
-        <p className="-mt-4 text-[13px] text-fog">
-          A newer run continues this item:{" "}
-          <Link to={`/runs/${newer.id}`} className="font-semibold text-amber hover:underline">
-            run #{newer.id}
-            {!isActive(newer.status) && listVerdict(newer) !== "unknown"
-              ? ` · ${VERDICT_LABELS[listVerdict(newer)]}`
-              : isActive(newer.status)
-                ? " · in progress"
-                : ""}
-          </Link>
-        </p>
-      )}
+      <ErrorNote error={actionError} />
 
-      <ErrorNote error={actionError ?? run.error} />
-
-      {run.status === "awaiting_approval" && (
+      {waiting && (
         <Approval
-          run={run}
+          run={waiting}
           job={job}
-          onApprove={() => void act(() => api.approveRun(run.id))}
-          onDismiss={() => void act(() => api.cancelRun(run.id))}
+          onApprove={() => void act(() => api.approveRun(waiting.id))}
+          onDismiss={() => void act(() => api.cancelRun(waiting.id))}
         />
       )}
 
-      {run.instructions !== null && (
-        <Section title="Your follow-up instructions">
-          <p className="max-w-[72ch] text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
-        </Section>
+      {!waiting && (
+        <section aria-label="Conversation" className="grid gap-7">
+          {item.runs.map((r) => (
+            <Turn key={r.id} run={r} selected={r.id === run.id} latest={r.id === item.latest.id} />
+          ))}
+        </section>
       )}
 
-      {(run.status === "running" || run.status === "queued") && (
-        <p className="text-[14px] text-fog">
-          {run.status === "running"
-            ? `${AGENT_LABELS[run.agent]} is working. Its report appears here when it finishes; the live log is below.`
-            : "Waiting for a free slot. It starts as soon as another run finishes."}
-        </p>
-      )}
-
-      {!active && (report || run.status === "succeeded") && (
-        <Section title="What the agent found">
-          {report ? <Markdown text={report} /> : <p className="text-[14px] text-fog">The agent printed no report.</p>}
-        </Section>
-      )}
-
-      {reply && item && (
+      {reply && replyRun && (
         <Reply
           reply={reply}
           replied={item.replied}
           onChange={(value) =>
             void act(async () => {
-              if (value) await api.markReplied(run.id, true);
+              if (value) await api.markReplied(replyRun.id, true);
               else await Promise.all(item.runs.filter((r) => r.repliedAt).map((r) => api.markReplied(r.id, false)));
             })
           }
         />
       )}
 
-      {hasChanges && !active && <Changes run={run} job={job} />}
+      {item.withChanges?.branch && itemFinished && <Changes key={`changes-${item.withChanges.id}`} run={item.withChanges} job={job} wholeBranch />}
 
-      {/* A failure without a report: the log is the evidence, so it comes before the follow-up. */}
-      {failedSilently && log}
+      {!waiting && (
+        <Composer
+          key={`composer-${item.root.id}`}
+          item={item}
+          job={job}
+          busy={activeRun}
+          onStarted={() => void thread.refresh()}
+        />
+      )}
 
-      {!active && <FollowUp key={run.id} run={run} job={job} item={item} verdict={parseVerdict(run.summary)} />}
-
-      <div className="grid gap-2">
+      <section aria-label={`Run #${run.id}`} className="grid gap-2">
+        <h2 className="section-label">
+          Run #{run.id}
+          {item.runs.length > 1 && " (selected above)"}
+        </h2>
         <RunDetails run={run} job={job} />
         {run.payload && (
-          <Disclosure title={item?.root.trigger === "watch" || run.trigger === "watch" ? "Raw report" : "Raw payload"}>
+          <Disclosure title={item.root.trigger === "watch" ? "Raw report" : "Raw payload"}>
             <pre className="log-view overflow-x-auto px-4 py-3 whitespace-pre-wrap text-bone">{run.payload}</pre>
           </Disclosure>
         )}
-        {!failedSilently && log}
-      </div>
+        <Disclosure key={`log-${run.id}`} title="Log" defaultOpen={selectedActive || selectedSilent}>
+          <LogView key={run.id} runId={run.id} live={selectedActive} />
+        </Disclosure>
+      </section>
     </article>
   );
 }
@@ -205,10 +185,6 @@ function Disclosure({ title, children, defaultOpen = false }: { title: string; c
   );
 }
 
-/** A run's verdict from what lists carry: its whole report when loaded, else its headline and verdict line. */
-function listVerdict(run: Run): Verdict {
-  return parseVerdict(run.summary ?? ([run.summaryHeadline, run.summaryVerdict].filter(Boolean).join("\n") || null));
-}
 
 const RUN_PILL: Record<Verdict, string> = {
   implemented: "pill-green",
@@ -220,17 +196,20 @@ const RUN_PILL: Record<Verdict, string> = {
   unknown: "pill-green",
 };
 
-/** This run's outcome: its verdict when it succeeded, otherwise its status. */
+/** A run's outcome: its verdict when a change run succeeded, "Answered" for a question, else its status. */
 function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = parseVerdict(run.summary);
-  const [label, tone] = run.merged
-    ? ["Merged", "pill-violet"]
-    : verdict !== "unknown"
-      ? [VERDICT_LABELS[verdict], RUN_PILL[verdict]]
-      : (run.commits ?? 0) > 0
-        ? ["Changes on branch", "pill-green"]
-        : ["No changes", "pill-muted"];
+  const [label, tone] =
+    run.mode === "ask"
+      ? ["Answered", "pill-muted"]
+      : run.merged
+        ? ["Merged", "pill-violet"]
+        : verdict !== "unknown"
+          ? [VERDICT_LABELS[verdict], RUN_PILL[verdict]]
+          : (run.commits ?? 0) > 0
+            ? ["Changes on branch", "pill-green"]
+            : ["No changes", "pill-muted"];
   return (
     <span className={`pill ${tone}`}>
       <span aria-hidden className="size-1.5 rounded-full bg-current" />
@@ -239,10 +218,8 @@ function RunPill({ run }: { run: Run }) {
   );
 }
 
-function RunHeader({ run, job, item, actions }: { run: Run; job: Job | null; item: Item | null; actions: ReactNode }) {
-  const now = useNow(1000);
-  const { reference, kind } = itemFields(item?.root ?? run);
-  const title = item ? itemTitle(item, job?.name) : (summarizePayload(run.payload).headline ?? job?.name ?? `Run #${run.id}`);
+function ItemHeader({ item, job, actions }: { item: Item; job: Job | null; actions: ReactNode }) {
+  const { reference, kind } = itemFields(item.root);
   return (
     <header className="grid gap-3">
       <Link to="/" className="justify-self-start text-[13px] text-fog hover:text-bone">
@@ -257,54 +234,96 @@ function RunHeader({ run, job, item, actions }: { run: Run; job: Job | null; ite
           </Link>
         )}
       </div>
-      <h1 className="run-title break-words">{title}</h1>
+      <h1 className="run-title break-words">{itemTitle(item, job?.name)}</h1>
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-fog">
-          <RunPill run={run} />
+          <ItemPill item={item} />
           <span>
-            Run #{run.id}
-            {run.followUpOf !== null && ` · follow-up of #${run.followUpOf}`}
-            {run.attempt > 1 && ` · attempt ${run.attempt}`}
-            {run.startedAt && ` · ${duration(run.startedAt, run.finishedAt, now)}`} · {AGENT_LABELS[run.agent]}
+            {item.runs.length} run{item.runs.length === 1 ? "" : "s"}
+            {job && ` · ${AGENT_LABELS[job.effectiveAgent]} on ${repoName(job.repoPath)}`}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">{actions}</div>
       </div>
-      {item && item.runs.length > 1 && <Thread item={item} current={run.id} />}
     </header>
   );
 }
 
-/** The item's runs in order, so a triage and its follow-ups read as one thread. */
-function Thread({ item, current }: { item: Item; current: number }) {
+const STARTED_BY: Record<Run["trigger"], string> = {
+  watch: "The job's watch found this report",
+  webhook: "The job's webhook received this",
+  schedule: "The job's schedule started this",
+  manual: "Started with Run now",
+};
+
+/** One exchange: what the owner asked or asked for (or what started the item), then the agent's reply. */
+function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: boolean }) {
+  const now = useNow(1000);
+  const active = isActive(run.status);
+  const { report } = splitReply(run.summary ?? "");
+  // Short replies show whole; long reports fold unless they are the newest or selected.
+  const long = report.length > 280 || report.split("\n").length > 4;
+  const [expanded, setExpanded] = useState(selected || latest || !long);
+  const ask = run.mode === "ask";
   return (
-    <nav aria-label="Runs for this item" className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <ol className="flex flex-wrap items-center gap-1.5">
-        {item.runs.map((r, index) => (
-          <li key={r.id} className="flex items-center gap-1.5">
-            {index > 0 && (
-              <span aria-hidden className="text-fog">
-                →
-              </span>
+    <div className="grid gap-3">
+      {run.instructions !== null && run.retryOf === null ? (
+        <div className="turn-you">
+          <div className="turn-label">
+            {ask ? <MessageCircleQuestion aria-hidden className="size-3.5" /> : <Wrench aria-hidden className="size-3.5" />}
+            You · {ask ? "Ask" : "Make changes"} · {relativeTime(run.createdAt, now)}
+          </div>
+          <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
+        </div>
+      ) : (
+        <p className="text-[12px] text-fog">
+          {run.retryOf !== null
+            ? `Retry of #${run.retryOf} (attempt ${run.attempt})`
+            : `${STARTED_BY[run.trigger]} · ${relativeTime(run.createdAt, now)}`}
+        </p>
+      )}
+
+      <div className={`turn-agent ${selected ? "turn-selected" : ""}`} aria-current={selected ? "true" : undefined}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
+          <span className="turn-label">Agent</span>
+          <RunPill run={run} />
+          <Link to={`/runs/${run.id}`} className="font-mono hover:text-bone" title="Select this run for its details and log">
+            #{run.id}
+          </Link>
+          {run.startedAt && <span>{duration(run.startedAt, run.finishedAt, now)}</span>}
+          {(run.commits ?? 0) > 0 && (
+            <span className="text-bone">
+              +{run.commits} commit{run.commits === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        {run.status === "queued" ? (
+          <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
+        ) : run.status === "running" ? (
+          <p className="text-[14px] text-fog">
+            {ask ? "Looking into it…" : "Working on it…"}{" "}
+            {!selected && (
+              <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
+                Watch the log
+              </Link>
             )}
-            <Link
-              to={`/runs/${r.id}`}
-              aria-current={r.id === current ? "page" : undefined}
-              className={`chip ${r.id === current ? "chip-current" : "hover:text-bone"}`}
-            >
-              #{r.id} {r.followUpOf !== null ? "Follow-up" : r.retryOf !== null ? "Retry" : TRIGGER_LABELS[r.trigger]}
-              {!isActive(r.status) && r.status !== "succeeded"
-                ? ` · ${r.status.replace("_", " ")}`
-                : listVerdict(r) !== "unknown"
-                  ? ` · ${VERDICT_LABELS[listVerdict(r)]}`
-                  : ""}
-            </Link>
-          </li>
-        ))}
-      </ol>
-      {/* The item's state, when it differs from what this run's own pill says. */}
-      {item.latest.id !== current && <ItemPill item={item} />}
-    </nav>
+          </p>
+        ) : report ? (
+          <div className={expanded ? "" : "turn-collapsed"}>
+            <Markdown text={report} />
+          </div>
+        ) : run.error ? (
+          <p className="text-[14px] text-red">{run.error}</p>
+        ) : (
+          <p className="text-[14px] text-fog">{active ? "" : "The agent printed no report."}</p>
+        )}
+        {report && long && !active && (
+          <button type="button" className="justify-self-start text-[12px] font-semibold text-fog hover:text-bone" onClick={() => setExpanded((e) => !e)}>
+            {expanded ? "Show less" : "Show the whole report"}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -391,76 +410,86 @@ function Reply({ reply, replied, onChange }: { reply: string; replied: boolean; 
   );
 }
 
-const PRESETS: {
+
+interface Preset {
   id: string;
   label: string;
-  text: (run: Run) => string;
-  when: (run: Run, verdict: Verdict, latest: boolean) => boolean;
-}[] = [
+  mode: RunMode;
+  text: (item: Item) => string;
+  when: (item: Item) => boolean;
+}
+
+const PRESETS: Preset[] = [
   {
     id: "implement",
     label: "Implement the proposal",
+    mode: "change",
     text: () =>
       "Implement the proposal from your report. Keep the change minimal, add or update tests, run the project's checks and commit.",
-    when: (_run, verdict, latest) => verdict === "needs_decision" && latest,
+    when: (item) => item.verdict === "needs_decision",
+  },
+  {
+    id: "risks",
+    label: "What are the risks?",
+    mode: "ask",
+    text: () => "What are the risks or open questions here? Be specific and brief.",
+    when: (item) => item.withChanges !== null || item.verdict === "needs_decision",
+  },
+  {
+    id: "explain",
+    label: "Explain the changes",
+    mode: "ask",
+    text: () => "Explain what the changes on this branch do and why, file by file, in plain language.",
+    when: (item) => item.withChanges !== null,
   },
   {
     id: "review",
     label: "Address review notes",
+    mode: "change",
     text: () => "Address these review notes on the current branch. Keep the existing commits and add new ones:\n- ",
-    when: (run) => (run.commits ?? 0) > 0,
+    when: (item) => item.withChanges !== null && !item.withChanges.merged,
   },
   {
     id: "reproduce",
     label: "Try to reproduce again",
+    mode: "change",
     text: () =>
       "Try again to reproduce the report. Add logging or a failing test that captures the expected behaviour, and report exactly what you observed.",
-    when: (_run, verdict) => verdict === "cant_reproduce",
-  },
-  {
-    id: "rebase",
-    label: "Rebase on the base branch",
-    text: () => "Rebase this branch onto the job's base branch, resolve conflicts, rerun the checks and report what changed.",
-    when: (run) => (run.commits ?? 0) > 0 && !run.merged,
+    when: (item) => item.verdict === "cant_reproduce",
   },
   {
     id: "retry",
     label: "Diagnose and retry",
-    text: (run) =>
-      `The previous attempt failed${run.error ? ` (${run.error})` : ""}. Diagnose the cause, fix it and finish the original task.`,
-    when: (run) => run.status === "failed" || run.status === "timed_out",
+    mode: "change",
+    text: (item) =>
+      `The previous attempt failed${item.latestWork.error ? ` (${item.latestWork.error})` : ""}. Diagnose the cause, fix it and finish the original task.`,
+    when: (item) => item.state === "failed",
   },
   {
     id: "reply",
     label: "Shorten the reply",
-    text: () => "Rewrite the suggested reply to the reporter in two sentences at most, plain and friendly, without technical detail.",
-    when: (run) => splitReply(run.summary ?? "").reply !== null,
+    mode: "ask",
+    text: () =>
+      'Rewrite your suggested reply to the reporter in two sentences at most, plain and friendly, without technical detail. Put it under a "Suggested reply" heading.',
+    when: (item) => item.runs.some((r) => splitReply(r.summary ?? "").reply !== null),
   },
 ];
 
-/** Starts a run that continues this one: from its result, with new instructions and this run as context. */
-function FollowUp({ run, job, item, verdict }: { run: Run; job: Job | null; item: Item | null; verdict: Verdict }) {
+/**
+ * The next message to the agent. Ask answers without touching the branch; Make changes adds commits
+ * to it. Both continue from the item's newest run.
+ */
+function Composer({ item, job, busy, onStarted }: { item: Item; job: Job | null; busy: Run | null; onStarted: () => void }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   // "Implement it" in the Inbox links here with ?followUp=implement: start with that preset, never submit.
   const requested = PRESETS.find((p) => p.id === params.get("followUp"));
-  const [instructions, setInstructions] = useState(() => requested?.text(run) ?? "");
-  const [starting, setStarting] = useState(false);
+  const [text, setText] = useState(() => requested?.text(item) ?? "");
+  const [preferred, setPreferred] = useState<RunMode>(requested?.mode ?? "change");
+  const [starting, setStarting] = useState<RunMode | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const boxRef = useRef<HTMLTextAreaElement>(null);
-  // Presets that continue the item fit only its newest run; an older run's proposal may be done already.
-  const latest = item === null || item.latest.id === run.id;
-  const presets = PRESETS.filter((preset) => preset.when(run, verdict, latest));
-
-  const insert = (text: string) => {
-    setInstructions((current) => (current.trim() ? `${current.trimEnd()}\n${text}` : text));
-    window.requestAnimationFrame(() => {
-      const box = boxRef.current;
-      if (!box) return;
-      box.focus();
-      box.setSelectionRange(box.value.length, box.value.length);
-    });
-  };
+  const presets = PRESETS.filter((preset) => preset.when(item)).slice(0, 5);
 
   useEffect(() => {
     if (!params.has("followUp")) return;
@@ -475,75 +504,106 @@ function FollowUp({ run, job, item, verdict }: { run: Run; job: Job | null; item
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const start = async () => {
-    setStarting(true);
+  const applyPreset = (preset: Preset) => {
+    const value = preset.text(item);
+    setText((current) => (current.trim() ? `${current.trimEnd()}\n${value}` : value));
+    setPreferred(preset.mode);
+    window.requestAnimationFrame(() => {
+      const box = boxRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
+  };
+
+  const send = async (mode: RunMode) => {
+    if (!text.trim() || busy) return;
+    setStarting(mode);
     setError(null);
     try {
-      const next = await api.followUp(run.id, instructions);
+      const next = await api.followUp(item.latest.id, text, mode);
+      setText("");
+      setStarting(null);
+      onStarted();
       navigate(`/runs/${next.id}`);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
-      setStarting(false);
+      setStarting(null);
     }
   };
+
   const fieldError = error instanceof ApiError ? error.fields.instructions : undefined;
-  const from = (run.commits ?? 0) > 0 ? "this run's branch" : job ? job.baseRef : "the job's base branch";
+  const remembers = job?.effectiveAgent === "pi";
+  const button = (mode: RunMode, label: string, icon: ReactNode) => (
+    <button
+      type="button"
+      className={`btn ${preferred === mode ? "btn-primary" : "btn-ghost"}`}
+      disabled={starting !== null || !text.trim() || busy !== null}
+      onClick={() => void send(mode)}
+    >
+      {icon}
+      {starting === mode ? "Sending…" : label}
+    </button>
+  );
+
   return (
-    <Section title="Follow up">
-      <p className="-mt-1 max-w-[72ch] text-[14px] leading-relaxed text-fog">
-        Starts a new run from {from} with your instructions. The agent also gets this run's instructions
-        {run.payload ? ", item" : ""} and report. Nothing merges or deploys.
-      </p>
+    <section aria-label="Next message" className="grid gap-3 rounded-[12px] border border-steel/30 bg-inkwell/40 p-4">
+      <label htmlFor="composer" className="sr-only">
+        Message to the agent
+      </label>
       {presets.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {presets.map((preset) => (
-            <button key={preset.id} type="button" className="btn btn-ghost btn-sm" onClick={() => insert(preset.text(run))}>
+            <button key={preset.id} type="button" className="btn btn-ghost btn-sm" onClick={() => applyPreset(preset)}>
               {preset.label}
             </button>
           ))}
         </div>
       )}
-      <form
-        className="grid gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void start();
+      <textarea
+        id="composer"
+        ref={boxRef}
+        aria-invalid={Boolean(fieldError)}
+        aria-describedby="composer-hint"
+        className="field min-h-[96px] resize-y leading-relaxed"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            void send(preferred);
+          }
         }}
-      >
-        <Field label="Instructions" error={fieldError}>
-          {(p) => (
-            <textarea
-              {...p}
-              ref={boxRef}
-              className="field min-h-[110px] resize-y leading-relaxed"
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && instructions.trim()) {
-                  e.preventDefault();
-                  void start();
-                }
-              }}
-              placeholder="What should the agent do next?"
-            />
-          )}
-        </Field>
-        {error && !fieldError && <ErrorNote error={error} />}
-        <div className="flex justify-end">
-          <button type="submit" className="btn btn-primary" disabled={starting || !instructions.trim()}>
-            <CornerDownRight aria-hidden className="size-3.5" />
-            {starting ? "Starting…" : "Start follow-up"}
-          </button>
+        placeholder="Ask the agent something, or tell it what to change…"
+      />
+      {fieldError && <p className="text-[12px] text-red">{fieldError}</p>}
+      {error && !fieldError && <ErrorNote error={error} />}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p id="composer-hint" className="max-w-[52ch] text-[12px] leading-snug text-fog">
+          {busy
+            ? `Run #${busy.id} is in progress. You can send the next message when it finishes.`
+            : `Ask answers without touching the branch. Make changes adds commits to it. ${
+                remembers ? "Pi continues the same conversation." : "The agent gets this item's earlier instructions and report."
+              }`}
+        </p>
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+          {button("ask", "Ask", <MessageCircleQuestion aria-hidden className="size-3.5" />)}
+          {button("change", "Make changes", <Wrench aria-hidden className="size-3.5" />)}
         </div>
-      </form>
-    </Section>
+      </div>
+    </section>
   );
 }
 
 function RunDetails({ run, job }: { run: Run; job: Job | null }) {
   const now = useNow(1000);
   const rows: [string, ReactNode][] = [
-    ["Trigger", run.followUpOf !== null ? `Follow-up of #${run.followUpOf}` : TRIGGER_LABELS[run.trigger]],
+    [
+      "Trigger",
+      run.followUpOf !== null
+        ? `${run.mode === "ask" ? "Question" : "Change request"} after #${run.followUpOf}`
+        : TRIGGER_LABELS[run.trigger],
+    ],
     ["Agent", AGENT_LABELS[run.agent]],
     ["Created", dateTime(run.createdAt)],
     [

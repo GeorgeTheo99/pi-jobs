@@ -87,37 +87,50 @@ approval** (`/runs?filter=approval`).
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 
-### Follow-ups
+### Ask and Make changes
 
-To act on what a finished run found (implement the feature a triage run proposed, say), type new
-instructions under **Follow up** on its run page, or `POST /api/runs/<id>/follow-up` with
-`{"instructions": "..."}`. That starts a new run of the same job from the earlier run's commits (from
-the job's base when it had none), on its own branch. Its prompt is your instructions, followed by the
-earlier run's instructions, payload and agent output (not its check's) as context; your instructions
-win where they differ. A follow-up is started by a person, like **Run now**: it needs no approval and
-runs while the job is paused (retries, as for any run, only while the job is on). Follow-ups can
-follow up on follow-ups.
+Once a run finishes, you continue its item from the composer at the bottom of its page (or
+`POST /api/runs/<id>/follow-up` with `{"instructions": "...", "mode": "ask" | "change"}`):
+
+| | **Ask** | **Make changes** (the default mode) |
+|---|---|---|
+| For | A question: "why one order for the whole household?" | An instruction: "implement the proposal", "rename the button" |
+| The agent | Reads code and runs read-only commands in a temporary checkout of the item's newest commits, then answers | Edits, tests and commits on a new branch built on the item's newest commits |
+| Kept | The answer only: no branch, no commits, no check command | The answer and the commits, shown under **Changes** |
+
+With Pi, every run of an item continues one conversation: pi-jobs gives the item a session ID
+(`pi --session-id`) and runs it in the same directory (`worktrees/job-<id>/item-<id>`), so the agent
+remembers what it read, tried and was asked. A retry starts a new session, since its checkout starts
+over. Other agents, and Pi when there is no earlier session, get the earlier run's instructions,
+payload and report in the prompt instead. Your message comes first; where the context differs, it
+wins. Reusing the item's directory removes a worktree an earlier run kept for inspection, after
+committing anything left in it to that run's branch.
+
+Messages are started by a person, like **Run now**: they need no approval and run while the job is
+paused (retries, as for any run, only while the job is on). Presets fill in common messages
+(implement the proposal, what are the risks, explain the changes, address review notes, shorten the
+reply).
 
 ### The Inbox
 
 The home page groups runs into **items**: a run started by a trigger, with its retries and
-follow-ups (a support report's triage and the follow-up that implements it are one item). Its
+follow-ups (a support report's triage, your questions about it and the run that implements it are one item). Its
 sections are **Waiting for you** (runs to approve, and proposals that need your decision, with
-**Implement it**, which opens the follow-up with that instruction filled in), **In progress**, **To
+**Implement it**, which opens the composer with that instruction filled in), **In progress**, **To
 review** (changes on a branch) and **Recent** (merged, closed, failed). **Check now** checks every
 watch at once (`POST /api/watches/check`). The nav badge counts what is waiting for you.
 
-A run page reads top to bottom: the item and its thread of runs, then **What the agent found**
-(the agent's final report, rendered), the **Suggested reply** to the reporter with **Copy reply**
-and a **Replied** switch, **Changes** (changed files with their diffs, for the run or the whole
-branch, and the git commands to review, merge and push), **Follow up** with preset instructions,
-and the log. The verdict (implemented, fixed, needs your decision, can't reproduce, duplicate, not
+A run page shows its whole item as a conversation: what started it, then each of your messages
+and the agent's reply (its report, rendered; older long ones folded). Below that: the **Suggested
+reply** to the reporter with **Copy reply** and a **Replied** switch, **Changes** (changed files with
+their diffs, for the whole branch or one run, and the git commands to review, merge and push), the
+composer, and the selected run's details and log. The verdict (implemented, fixed, needs your decision, can't reproduce, duplicate, not
 actionable) comes from the report's first line or its `Verdict:` line, so job prompts that end with
 a summary like that get the most from it.
 
 Items are **Merged** once their branch's commits are in the job's base branch (`origin/<base>` as
 last fetched, else the local branch). **Close item** marks one done without merging. The API behind
-these: a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
+these: `GET /api/runs/<id>/thread` (the item's runs, oldest first, with reports), a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
 `summaryVerdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
 up to 1 MiB), and `POST /api/runs/<id>/replied` or `/closed` with `{"value": true|false}`. pi-jobs
 never sends replies, merges or pushes: those stay with you.
