@@ -4,7 +4,7 @@ import { AUTH_REQUIRED_EVENT, ApiError, api, tokenStore } from "@/lib/api";
 
 type State = "checking" | "signed-in" | "signed-out";
 
-/** Shows the app only with a working API token; otherwise asks for one. */
+/** Shows the app only with a working API token (a generated one or a chosen password); otherwise asks for one. */
 export function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(() => (tokenStore.get() ? "checking" : "signed-out"));
 
@@ -43,7 +43,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       tokenStore.set(token.trim());
       onSignedIn();
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 401 ? "That token isn't valid." : String((err as Error).message));
+      setError(err instanceof ApiError && err.status === 401 ? "That password or token isn't valid." : String((err as Error).message));
     } finally {
       setBusy(false);
     }
@@ -59,12 +59,13 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <div>
           <h1 className="text-[20px] font-bold tracking-[-0.02em]">Sign in</h1>
           <p className="mt-1 text-[13px] text-fog">
-            Paste an API token. Create one on the server with <code className="font-mono text-bone">pi-jobs token create &lt;name&gt;</code>, or
-            under Settings → API tokens on a device that's already signed in.
+            Enter your password or an API token. Create one on the server with{" "}
+            <code className="font-mono text-bone">pi-jobs token create &lt;name&gt; [--set]</code>, or under Settings → API tokens on a device
+            that's already signed in.
           </p>
         </div>
         <label className="grid gap-1.5">
-          <span className="text-[13px] font-semibold">API token</span>
+          <span className="text-[13px] font-semibold">Password or API token</span>
           <input
             type="password"
             className="field font-mono text-[13px]"

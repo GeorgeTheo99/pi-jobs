@@ -120,13 +120,13 @@ this server's API (see Safety).
 ## Access
 
 Every `/api` route except `/api/health` and webhooks needs `Authorization: Bearer <API token>`.
-Tokens are stored hashed. The UI asks for one on first visit and keeps it in the browser.
+Tokens are stored hashed. The UI asks for one (or a password you set as a token) on first visit and keeps it in the browser.
 
 | Task | How |
 |---|---|
 | First token (bootstrap) | On the server: `pi-jobs token create <name>` prints a token once |
 | More tokens | Settings → API tokens in a signed-in browser, which also shows the setup command for another machine |
-| Choose the token yourself | Fill in **Token** when creating one in Settings, or `pi-jobs token create <name> --set` (reads it from stdin, prompting twice on a terminal). It must be `pjt_` followed by 20 to 200 letters, digits, `-` or `_`, the form every pi-jobs client accepts |
+| Choose the token yourself (a password) | Fill in **Token** when creating one in Settings, or `pi-jobs token create <name> --set` (reads it from stdin, prompting twice on a terminal). Anything goes, `password` included: 1 to 200 letters, digits, symbols or spaces, not starting or ending with a space (HTTP headers drop those). Sign in to the UI with it like any token |
 | List or revoke | Settings → API tokens, or `pi-jobs token list` / `pi-jobs token revoke <name>` |
 
 `pi-jobs` is `~/.local/bin/pi-jobs`, linked to `bin/pi-jobs` by the install script.

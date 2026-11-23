@@ -149,7 +149,7 @@ async function main(argv: string[]): Promise<number> {
     }
     const token = await readSecret("pi-jobs API token: ");
     if (!TOKEN_PATTERN.test(token)) {
-      console.error("That doesn't look like a pi-jobs token (pjt_…)");
+      console.error(TOKEN_RULE);
       return 1;
     }
     writeClientConfig(sub.replace(/\/+$/, ""), token);

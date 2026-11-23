@@ -23,7 +23,7 @@ test("asks for a token when none is stored, and checks it before saving", async 
   vi.stubGlobal("fetch", fetchMock);
   render(<AuthGate>app</AuthGate>);
   expect(screen.queryByText("app")).toBeNull();
-  fireEvent.change(screen.getByLabelText("API token"), { target: { value: "pjt_good" } });
+  fireEvent.change(screen.getByLabelText("Password or API token"), { target: { value: "pjt_good" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Sign in" })));
   expect(await screen.findByText("app")).toBeTruthy();
   expect(tokenStore.get()).toBe("pjt_good");
@@ -34,9 +34,9 @@ test("asks for a token when none is stored, and checks it before saving", async 
 test("a rejected token is not saved", async () => {
   vi.stubGlobal("fetch", respond(401, { error: "Sign in with an API token" }));
   render(<AuthGate>app</AuthGate>);
-  fireEvent.change(screen.getByLabelText("API token"), { target: { value: "pjt_bad" } });
+  fireEvent.change(screen.getByLabelText("Password or API token"), { target: { value: "pjt_bad" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Sign in" })));
-  expect(await screen.findByText("That token isn't valid.")).toBeTruthy();
+  expect(await screen.findByText("That password or token isn't valid.")).toBeTruthy();
   expect(tokenStore.get()).toBeNull();
 });
 

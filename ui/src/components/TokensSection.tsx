@@ -117,7 +117,7 @@ export function TokensSection() {
           <Field
             label="Token (optional)"
             error={fieldErrors.token}
-            hint="Leave empty to generate one, or set your own: pjt_ followed by 20 to 200 letters, digits, - or _."
+            hint="Leave empty to generate one, or set your own, such as a password: up to 200 letters, digits, symbols or spaces."
           >
             {(p) => (
               <input
@@ -129,7 +129,6 @@ export function TokensSection() {
                 autoComplete="new-password"
                 autoCapitalize="off"
                 spellCheck={false}
-                placeholder="pjt_…"
               />
             )}
           </Field>

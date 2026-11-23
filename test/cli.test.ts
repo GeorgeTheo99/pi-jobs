@@ -57,10 +57,13 @@ test("token create --set stores a token you choose and never prints it", (t) => 
   const reused = box.run(["token", "create", "other", "--set"], `${chosen}\n`);
   assert.equal(reused.status, 1);
   assert.match(reused.stderr, /already in use/);
-  const bad = box.run(["token", "create", "weak", "--set"], "pjt_short\n");
+  const weak = box.run(["token", "create", "weak", "--set"], "password\n");
+  assert.equal(weak.status, 0, weak.stderr);
+  assert.equal(store.authenticate("password")?.name, "weak");
+  const bad = box.run(["token", "create", "bad", "--set"], `${"x".repeat(201)}\n`);
   assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /pjt_ followed by 20 to 200/);
-  assert.deepEqual(box.tokenNames(), ["admin"]);
+  assert.match(bad.stderr, /1 to 200/);
+  assert.deepEqual(box.tokenNames(), ["admin", "weak"]);
 });
 
 test("connect-local mints one token and is idempotent", (t) => {
@@ -93,7 +96,7 @@ test("client-config reads the token from stdin and refuses unsafe URLs", (t) => 
   const box = sandbox(t);
   const token = "pjt_abcdefghijklmnopqrstuvwxyz0123";
   assert.equal(box.run(["client-config", "http://studio.example"], token).status, 2);
-  assert.equal(box.run(["client-config", "https://studio.example/pi-jobs/"], "not-a-token").status, 1);
+  assert.equal(box.run(["client-config", "https://studio.example/pi-jobs/"], `${"x".repeat(201)}\n`).status, 1);
   const saved = box.run(["client-config", "https://studio.example/pi-jobs/"], `${token}\n`);
   assert.equal(saved.status, 0, saved.stderr);
   assert.deepEqual(box.client(), { url: "https://studio.example/pi-jobs", token });

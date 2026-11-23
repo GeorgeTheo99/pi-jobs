@@ -194,9 +194,12 @@ const now = () => new Date().toISOString();
 
 const hashToken = (secret: string) => createHash("sha256").update(secret).digest("hex");
 
-/** Generated tokens and owner-chosen ones share this form, which every pi-jobs client accepts. */
-export const TOKEN_PATTERN = /^pjt_[A-Za-z0-9_-]{20,200}$/;
-export const TOKEN_RULE = "Use pjt_ followed by 20 to 200 letters, digits, - or _";
+/**
+ * An owner-chosen token (a password, say) may be anything an HTTP header can carry intact: 1 to 200
+ * printable ASCII characters, with spaces allowed inside but not at the ends, where headers drop them.
+ */
+export const TOKEN_PATTERN = /^[\x21-\x7e](?:[\x20-\x7e]{0,198}[\x21-\x7e])?$/;
+export const TOKEN_RULE = "Use 1 to 200 letters, digits, symbols or spaces, not starting or ending with a space";
 
 export interface ApiToken {
   id: number;
