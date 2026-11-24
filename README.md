@@ -140,12 +140,18 @@ after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_R
   while the job is paused.
 - **Checked, not taken on the agent's word.** Agents often exit 0 after stopping at a failed step.
   An agent's release succeeds only if its report doesn't end with "Not released", the item's result
-  is on `origin/<base>` after a fetch, and the verify command passes. A script's release needs exit
+  is on `origin/<base>` after a fetch (as the same commits, or as the same patches after a rebase),
+  and the verify command passes. A release that failed after it pushed, or timed out after its
+  result went out, stays in **Waiting for you** as failed and says it may have gone out. A released
+  item can't be released again until new work lands. A script's release needs exit
   0 and the verify command.
 - **Release automatically** (`autoRelease`, needs a check command) releases a run at once when its
-  check passed and its report's verdict is implemented or fixed. Proposals, triage notes waiting
-  for your decision, failures and unchecked work still wait for you. With **Approve before
-  running** off too, a watch job goes from report to release on its own.
+  check passed and its report's `Verdict:` line says implemented or fixed. Proposals, triage notes
+  waiting for your decision, failures, unchecked work and reports without a `Verdict:` line still
+  wait for you (and you are notified). With **Approve before running** off too, a watch or webhook
+  job goes from report to release on its own: the agent treats reports as data, but it also writes
+  the code the check runs and the verdict, so do that only for sources you trust. Jobs saved with
+  automatic release before 0.9.0 and no check command stop releasing by themselves until they get one.
 - **Never retried.** A release may have done part of something irreversible, so after a failure you
   decide what comes next. **Release again** runs it once more, from the release's own head (it may
   have rebased or committed a version bump). A release a server stop cut off says so if its result

@@ -1,6 +1,8 @@
-/** Reads the parts of an agent's final report the UI acts on: its verdict and its suggested reply. */
+/** Reads the part of an agent's final report the UI acts on, its suggested reply, and labels verdicts (which the server reads). */
 
-export type Verdict = "implemented" | "fixed" | "needs_decision" | "cant_reproduce" | "duplicate" | "not_actionable" | "unknown";
+import type { Verdict } from "./api";
+
+export type { Verdict };
 
 export const VERDICT_LABELS: Record<Verdict, string> = {
   implemented: "Implemented",
@@ -19,34 +21,6 @@ export function plainLine(line: string): string {
     .replace(/\*\*|__|`/g, "")
     .replace(/[‘’]/g, "'")
     .trim();
-}
-
-function classify(text: string): Verdict {
-  const t = plainLine(text).toLowerCase();
-  if (/\bimplemented\b/.test(t)) return "implemented";
-  if (/\b(fixed|committed as|resolved)\b/.test(t)) return "fixed";
-  if (/\b(needs?|awaiting|requires)\b.{0,20}\b(decision|owner|input|call)\b/.test(t) || /\bfeature idea\b/.test(t)) {
-    return "needs_decision";
-  }
-  if (/\b(can't|cannot|could ?not|unable to) reproduce\b/.test(t)) return "cant_reproduce";
-  if (/\bduplicate of\b|^duplicate\b/.test(t)) return "duplicate";
-  if (/\bnot actionable\b/.test(t)) return "not_actionable";
-  return "unknown";
-}
-
-/**
- * The verdict of a report: from an explicit "Verdict:" line when there is one (the triage prompt asks
- * for it), otherwise from the first line, where agents put their headline.
- */
-export function parseVerdict(summary: string | null | undefined): Verdict {
-  if (!summary) return "unknown";
-  const explicit = summary.split("\n").find((line) => /^\W*verdict\W*:/i.test(plainLine(line)));
-  if (explicit) {
-    const verdict = classify(plainLine(explicit).replace(/^\W*verdict\W*:\s*/i, ""));
-    if (verdict !== "unknown") return verdict;
-  }
-  const first = summary.split("\n").find((line) => line.trim());
-  return first ? classify(first) : "unknown";
 }
 
 const REPLY_HEADING = /^\s*(?:#{1,6}\s*|\*\*|__)?\s*(?:a\s+)?suggested reply\b[^\n]*$/i;

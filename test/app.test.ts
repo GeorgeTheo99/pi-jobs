@@ -249,6 +249,10 @@ test("release instructions and release scripts exclude each other; autoRelease n
   assert.deepEqual([renamed.json.name, renamed.json.checkCommand, renamed.json.enabled, renamed.json.timeoutMinutes], ["renamed", "true", true, 30]);
   const paused = await app.call("PATCH", `/api/jobs/${job.json.id}`, { enabled: false });
   assert.deepEqual([paused.json.enabled, paused.json.name], [false, "renamed"]);
+  // A job saved before automatic releases needed a check can still be paused; turning it on again asks for one.
+  app.store.updateJob(job.json.id, { ...app.store.getJob(job.json.id)!, checkCommand: null }, null);
+  assert.equal((await app.call("PATCH", `/api/jobs/${job.json.id}`, { enabled: true })).status, 200);
+  assert.equal((await app.call("PATCH", `/api/jobs/${job.json.id}`, { autoRelease: true })).status, 400);
 });
 
 test("requests from other hosts, cross-origin writes and form posts are rejected", async (t) => {

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import type { Config } from "./config.ts";
 import { withoutSessionEnv, signalGroup } from "./process.ts";
-import { RELEASABLE_VERDICTS, parseVerdict, summaryHeadline } from "./report.ts";
+import { autoReleaseBlocker } from "./items.ts";
+import { parseVerdict, summaryHeadline } from "./report.ts";
 import type { Job, Run, Store } from "./store.ts";
 
 const NOTIFY_TIMEOUT_MS = 30_000;
@@ -41,7 +42,7 @@ export function finishedNotification(run: Run, job: Job | null, retrying: boolea
   if (verdict === "needs_decision") return { ...base, event: "decision", title: `Needs your decision: ${name}`, message: short(headline) };
   if ((run.commits ?? 0) > 0) {
     // Work the job releases by itself is announced by its release instead.
-    if (job?.autoRelease && run.checkStatus === "passed" && RELEASABLE_VERDICTS.includes(verdict)) return null;
+    if (job?.autoRelease && (job.releaseInstructions || job.shipCommand) && job.enabled && !autoReleaseBlocker(job, run)) return null;
     return { ...base, event: "review", title: `Ready to review: ${name}`, message: short(headline) };
   }
   return null;

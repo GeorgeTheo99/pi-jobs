@@ -998,6 +998,7 @@ test("a release run has the agent release the item: checked against git and the 
   assert.match(seen.prompt, /Never force-push main/);
   assert.equal(seen.commit, released.baseCommit);
   assert.ok((await ctx.runner.repos.mergedRuns([changed])).has(changed.id), "the item counts as merged once main has it");
+  await assert.rejects(ctx.runner.release(released), /already released: make changes first/, "a released item isn't released twice");
 
   // A follow-up after a release starts from what was released and is told how it went.
   ctx.useFakeAgent("edit");
@@ -1016,7 +1017,7 @@ test("a release run has the agent release the item: checked against git and the 
   assert.equal(proposal.checkStatus, "passed");
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(ctx.store.itemRuns(proposal.itemId).length, 1, "a proposal waits for the owner");
-  assert.match(readFileSync(ctx.runner.logPath(proposal.id), "utf8"), /Not releasing automatically: its report's verdict is unknown/);
+  assert.match(readFileSync(ctx.runner.logPath(proposal.id), "utf8"), /Not releasing automatically: its report has no Verdict: line/);
 
   ctx.useFakeAgent("implemented");
   const fix = ctx.runner.trigger(job, "manual");
@@ -1028,6 +1029,33 @@ test("a release run has the agent release the item: checked against git and the 
   assert.equal(auto.mode, "release");
   assert.match(readFileSync(ctx.runner.logPath(fixed.id), "utf8"), /Releasing automatically: run #/);
   await waitForFinish(ctx.runner, auto.id);
+});
+
+test("a release that rebased onto a moved base counts as released, by patch", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const remote = path.join(ctx.root, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  git(ctx.repo, "remote", "add", "origin", remote);
+  git(ctx.repo, "push", "-q", "origin", "main");
+  const job = ctx.store.createJob(ctx.jobInput({ releaseInstructions: "Release it" }), null);
+  ctx.useFakeAgent("commit");
+  const started = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in started);
+  const changed = await waitForFinish(ctx.runner, started.run.id);
+  // Someone else pushes to main meanwhile.
+  const other = path.join(ctx.root, "other");
+  execFileSync("git", ["clone", "-q", remote, other]);
+  writeFileSync(path.join(other, "other.txt"), "theirs\n");
+  git(other, "add", "other.txt");
+  git(other, "-c", "user.name=o", "-c", "user.email=o@example.com", "commit", "-qm", "theirs");
+  git(other, "push", "-q", "origin", "main");
+
+  ctx.useFakeAgent("rebase-release");
+  const released = await waitForFinish(ctx.runner, (await ctx.runner.release(changed)).id);
+  assert.equal(released.status, "succeeded", `${released.error} ${readFileSync(ctx.runner.logPath(released.id), "utf8")}`);
+  assert.notEqual(git(remote, "rev-parse", "main"), changed.headCommit, "the pushed commit is a rebased copy");
+  assert.equal(released.commits, 0);
 });
 
 test("a run whose agent was removed from Settings fails without retries", async (t) => {

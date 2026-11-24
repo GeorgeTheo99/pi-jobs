@@ -1,5 +1,18 @@
 import { ACTIVE_STATUSES, RELEASE_MODES, type Job, type Run } from "./store.ts";
-import { parseVerdict, summaryHeadline, summaryVerdict, type Verdict } from "./report.ts";
+import { RELEASABLE_VERDICTS, explicitVerdict, parseVerdict, summaryHeadline, summaryVerdict, type Verdict } from "./report.ts";
+
+/**
+ * Why a run that succeeded with changes isn't released automatically, or null when it is: its check
+ * must have passed, and its report's "Verdict:" line must say implemented or fixed. A headline alone
+ * isn't enough: the agent wrote it, after reading untrusted reports.
+ */
+export function autoReleaseBlocker(job: Pick<Job, "checkCommand">, run: Pick<Run, "checkStatus" | "summary">): string | null {
+  if (!job.checkCommand || run.checkStatus !== "passed") return "its check didn't pass";
+  const verdict = explicitVerdict(run.summary);
+  if (verdict === null) return "its report has no Verdict: line";
+  if (!RELEASABLE_VERDICTS.includes(verdict)) return `its report's verdict is ${verdict.replace("_", " ")}`;
+  return null;
+}
 
 /**
  * An item is one piece of work: a run started by a trigger, with its retries, follow-ups and releases
@@ -28,6 +41,15 @@ export function runView(run: Run, merged: boolean): RunView {
 export function listRunView(run: Run, merged: boolean): Omit<RunView, "summary"> {
   const { summary: _summary, ...view } = runView(run, merged);
   return view;
+}
+
+/** The commit a release of the item would release (as the runner finds it), from its runs, oldest first. */
+export function itemHeadCommit(runs: Pick<Run, "mode" | "headCommit" | "commits">[]): string | null {
+  for (const run of [...runs].reverse()) {
+    if (run.mode === "release" && run.headCommit) return run.headCommit;
+    if (run.headCommit && (run.commits ?? 0) > 0) return run.headCommit;
+  }
+  return null;
 }
 
 export interface ItemView<R extends Omit<RunView, "summary">> {
@@ -85,6 +107,8 @@ function stateOf(runs: ListedRun[], latestWork: ListedRun, verdict: Verdict, wit
   if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
   if (runs.some(isOpen)) return "running";
   if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status === "succeeded") return "released";
+  // A release that failed after it pushed (its verify command, a timeout) still needs the owner.
+  if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status !== "canceled") return "failed";
   if (withChanges?.merged) return "merged";
   if (latestWork.closedAt !== null) return "closed";
   if (latestWork.status === "failed" || latestWork.status === "timed_out") return "failed";

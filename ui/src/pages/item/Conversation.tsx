@@ -24,7 +24,7 @@ export function RunPill({ run }: { run: Run }) {
   const verdict = run.verdict ?? "unknown";
   const [label, tone] =
     isReleaseMode(run.mode)
-      ? [run.mode === "release" ? "Released" : "Shipped", "pill-violet"]
+      ? ["Released", "pill-violet"]
       : run.mode === "ask"
       ? ["Answered", "pill-muted"]
       : run.merged
@@ -73,7 +73,7 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
               <Wrench aria-hidden className="size-3.5" />
             )}
             {/* A release may come from the job's Release automatically, not the owner. */}
-            {release ? "Release" : `You · ${ask ? "Ask" : "Make changes"}`} · {relativeTime(run.createdAt, now)}
+            {release ? `Release${releasedBy(run)}` : `You · ${ask ? "Ask" : "Make changes"}`} · {relativeTime(run.createdAt, now)}
           </div>
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
         </div>
@@ -142,7 +142,7 @@ function ScriptReleaseTurn({ run, selected }: { run: Run; selected: boolean }) {
       <div className="turn-you">
         <div className="turn-label">
           <Rocket aria-hidden className="size-3.5" />
-          Release · {relativeTime(run.createdAt, now)}
+          Release{releasedBy(run)} · {relativeTime(run.createdAt, now)}
         </div>
         <p className="font-mono text-[13px] break-all text-bone">{run.instructions}</p>
       </div>
@@ -185,3 +185,8 @@ function ScriptReleaseTurn({ run, selected }: { run: Run; selected: boolean }) {
   );
 }
 
+/** Who started a release: " · automatic", " · by <token name>", or nothing when not recorded. */
+function releasedBy(run: Run): string {
+  if (run.requestedBy === "autoRelease") return " · automatic";
+  return run.requestedBy ? ` · by ${run.requestedBy}` : "";
+}

@@ -71,8 +71,11 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
   const checkCommand = text("checkCommand") || null;
   const autoRelease = body.autoRelease === true;
   if (autoRelease && !releaseInstructions && !shipCommand) fields.autoRelease = "Add release instructions or a release script first";
-  // Without a check, "succeeded" means only that the agent exited 0: too little to release on.
-  else if (autoRelease && !checkCommand) fields.autoRelease = "Add a check command first: automatic releases need a passing check";
+  // Without a check, "succeeded" means only that the agent exited 0: too little to release on. Checked
+  // only when the request sets either, so a job saved before this rule can still be paused or renamed.
+  else if (autoRelease && !checkCommand && (!existing || "autoRelease" in sent || "checkCommand" in sent)) {
+    fields.autoRelease = "Add a check command first: automatic releases need a passing check";
+  }
 
   const retries = Number(body.retries ?? DEFAULT_RETRIES);
   if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {

@@ -13,10 +13,11 @@ export function RunDetails({ run, job }: { run: Run; job: Job | null }) {
     [
       "Trigger",
       run.followUpOf !== null
-        ? `${run.mode === "ask" ? "Question" : run.mode === "ship" ? "Ship" : run.mode === "release" ? "Release" : "Change request"} after #${run.followUpOf}`
+        ? `${run.mode === "ask" ? "Question" : run.mode === "ship" || run.mode === "release" ? "Release" : "Change request"} after #${run.followUpOf}`
         : TRIGGER_LABELS[run.trigger],
     ],
-    ["Agent", run.mode === "ship" ? "None (ship command)" : agentLabel(run.agent)],
+    ["Agent", run.mode === "ship" ? "None (release script)" : agentLabel(run.agent)],
+    ["Started by", run.requestedBy === "autoRelease" ? "Release automatically" : (run.requestedBy ?? (run.followUpOf === null && run.trigger !== "manual" ? `Its ${TRIGGER_LABELS[run.trigger].toLowerCase()}` : "—"))],
     ["Created", dateTime(run.createdAt)],
     [
       "Started",

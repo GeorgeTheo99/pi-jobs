@@ -17,16 +17,30 @@ runner.on("finished", (run, { retrying }) => {
   const notification = finishedNotification(run, store.getJob(run.jobId), retrying);
   if (notification) void notifier.send(notification);
 });
-runner.on("awaiting", (run) => {
-  const job = store.getJob(run.jobId);
-  void notifier.send({
-    event: "approval",
-    title: `New: ${summarizePayload(run.payload) ?? job?.name ?? `run #${run.id}`}`,
-    message: `${job?.name ?? "A job"} has a run waiting for your approval.`,
-    path: `/runs/${run.id}`,
-    jobId: run.jobId,
-    runId: run.id,
-  });
+runner.on("awaiting", (runs) => {
+  const job = store.getJob(runs[0]!.jobId);
+  const first = runs[0]!;
+  void notifier.send(
+    runs.length === 1
+      ? {
+          event: "approval",
+          title: `New: ${summarizePayload(first.payload) ?? job?.name ?? `run #${first.id}`}`,
+          message: `${job?.name ?? "A job"} has a run waiting for your approval.`,
+          path: `/runs/${first.id}`,
+          jobId: first.jobId,
+          runId: first.id,
+        }
+      : {
+          event: "approval",
+          title: `${runs.length} new: ${job?.name ?? "a job"}`,
+          message: runs.map((run) => summarizePayload(run.payload) ?? `run #${run.id}`).join("; ").slice(0, 300),
+          path: "/",
+          jobId: first.jobId,
+        },
+  );
+});
+runner.on("autoReleaseFailed", (run, error) => {
+  void notifier.send({ event: "review", title: `Ready to review (not released automatically): ${store.getJob(run.jobId)?.name ?? `job #${run.jobId}`}`, message: error.slice(0, 300), path: `/runs/${run.id}`, jobId: run.jobId, runId: run.id });
 });
 runner.on("watchFailed", (job, error) => {
   void notifier.send({ event: "watch_failed", title: `Watch failing: ${job.name}`, message: error.slice(0, 300), path: `/jobs/${job.id}`, jobId: job.id });
@@ -35,6 +49,10 @@ runner.on("watchFailed", (job, error) => {
 const interrupted = store.failInterruptedRuns();
 if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 for (const run of interrupted) runner.retry(run);
+// A release the stop cut off needs the owner: it may have gone out.
+for (const run of interrupted.filter((r) => r.mode === "release" || r.mode === "ship")) {
+  void notifier.send({ event: "release_failed", title: `Release interrupted: ${store.getJob(run.jobId)?.name ?? `job #${run.jobId}`}`, message: "The server stopped during the release. Check whether it went out before releasing again.", path: `/runs/${run.id}`, jobId: run.jobId, runId: run.id });
+}
 // Releases cut off by this stop, or a graceful one in the last day, may have gone out anyway.
 void runner.recheckInterruptedReleases(new Date(Date.now() - 24 * 60 * 60_000).toISOString()).catch((error) => {
   console.error("Could not recheck interrupted releases:", error);

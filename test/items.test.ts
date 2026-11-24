@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { itemView, runView } from "../src/items.ts";
+import { autoReleaseBlocker, itemView, runView } from "../src/items.ts";
 import { parseVerdict } from "../src/report.ts";
 import type { Job, Run } from "../src/store.ts";
 
@@ -90,13 +90,36 @@ test("releases: released once one succeeds; releasable with instructions or a sc
   const released = itemView([work, failedRelease, run({ id: 3, followUpOf: 2, mode: "release" })], releasing);
   assert.deepEqual([released.state, released.withChangesId, released.canRelease], ["released", 1, false], "done until new work");
   assert.equal(itemView([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })], script).canRelease, false);
+  // A release that pushed, then failed its verify command: on main, but still the owner's to check.
+  const pushedThenFailed = itemView([run({ id: 1, commits: 1, merged: true }), run({ id: 2, followUpOf: 1, mode: "release", status: "failed" })], releasing);
+  assert.equal(pushedThenFailed.state, "failed");
 });
 
-test("verdicts read negations as not done", () => {
+test("verdicts read negations as not done, and real report headlines", () => {
+  assert.equal(parseVerdict("**HS-E123817D: feature idea, needs the owner’s decision.**\n\n- found it"), "needs_decision");
+  assert.equal(parseVerdict("**Implemented HS-E123817D and committed as `1f87d08`** — `feat: add reordering`."), "implemented");
+  assert.equal(parseVerdict("Done.\n- Verdict: can't reproduce"), "cant_reproduce");
+  assert.equal(parseVerdict("Summary\nVerdict: duplicate of MY-12"), "duplicate");
+  assert.equal(parseVerdict("**Verdict:** not actionable"), "not_actionable");
+  assert.equal(parseVerdict("Wrote the report."), "unknown");
+  assert.equal(parseVerdict(null), "unknown");
   assert.equal(parseVerdict("Implemented HS-1"), "implemented");
   assert.equal(parseVerdict("Fixed on this branch"), "fixed");
   assert.equal(parseVerdict("This feature has not been implemented."), "needs_decision");
   assert.equal(parseVerdict("Verdict: could not be fixed safely"), "needs_decision");
   assert.equal(parseVerdict("Verdict: can't reproduce"), "cant_reproduce");
   assert.equal(parseVerdict("Some report\n**Verdict:** fixed on this branch"), "fixed");
+  assert.equal(parseVerdict("It wasn't fixed: the cause is upstream"), "needs_decision");
+  assert.equal(parseVerdict("This hasn't been implemented yet"), "needs_decision");
+  assert.equal(parseVerdict("Triage note committed as abc123; needs your decision"), "needs_decision");
+  assert.equal(parseVerdict("A bug in the fixed-width parser"), "unknown");
+});
+
+test("automatic releases go by the check and the report's Verdict: line only", () => {
+  const job = { checkCommand: "npm test" };
+  assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Implemented it\nVerdict: implemented on this branch" }), null);
+  assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Implemented it" }), "its report has no Verdict: line");
+  assert.equal(autoReleaseBlocker(job, { checkStatus: "failed", summary: "Verdict: fixed" }), "its check didn't pass");
+  assert.equal(autoReleaseBlocker({ checkCommand: null }, { checkStatus: null, summary: "Verdict: fixed" }), "its check didn't pass");
+  assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Verdict: wasn't fixed" }), "its report's verdict is needs decision");
 });

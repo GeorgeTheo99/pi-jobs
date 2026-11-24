@@ -20,7 +20,8 @@ export function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Jo
           Start this run?
         </h2>
         <p className="max-w-[72ch] text-[14px] leading-relaxed text-fog">
-          {APPROVAL_REASONS[run.trigger]} Approving starts {agentLabel(run.agent)}
+          {/* Runs take the job's agent when they start. */}
+          {APPROVAL_REASONS[run.trigger]} Approving starts {agentLabel(job?.effectiveAgent ?? run.agent)}
           {job ? (
             <>
               {" "}

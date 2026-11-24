@@ -20,9 +20,10 @@ test("finished runs notify only when they need the owner", () => {
   assert.equal(finishedNotification(run({ summary: "Nothing to do" }), job, false), null);
   assert.equal(finishedNotification(run({ mode: "release" }), job, false)?.event, "released");
   assert.equal(finishedNotification(run({ mode: "ship", status: "failed", error: "exit 1" }), job, false)?.event, "release_failed");
-  const auto = { ...job, autoRelease: true } as Job;
-  assert.equal(finishedNotification(run({ summary: "Implemented it", commits: 1, checkStatus: "passed" }), auto, false), null, "its release says it");
-  assert.equal(finishedNotification(run({ summary: "Implemented it", commits: 1, checkStatus: "failed" }), auto, false)?.event, "review");
+  const auto = { ...job, autoRelease: true, enabled: true, checkCommand: "npm test", releaseInstructions: "Release it" } as Job;
+  assert.equal(finishedNotification(run({ summary: "Implemented it\nVerdict: implemented", commits: 1, checkStatus: "passed" }), auto, false), null, "its release says it");
+  assert.equal(finishedNotification(run({ summary: "Implemented it\nVerdict: implemented", commits: 1, checkStatus: "failed" }), auto, false)?.event, "review");
+  assert.equal(finishedNotification(run({ summary: "Implemented it", commits: 1, checkStatus: "passed" }), auto, false)?.event, "review", "no Verdict: line, no automatic release");
 });
 
 test("the notify command gets the event in its environment; failures are reported, not thrown", async (t) => {

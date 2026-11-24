@@ -150,7 +150,7 @@ export function WaitingCard({ item, job, onChanged }: { item: Item; job: Job | u
           {item.state === "approval"
             ? paused
               ? "The job is paused. Resume it to start."
-              : `${agentLabel(run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
+              : `${agentLabel(job?.effectiveAgent ?? run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
             : failedRelease
               ? "The release didn't finish: check what it did before releasing again"
               : WAITING_NOTES[item.state]}

@@ -52,16 +52,17 @@ export function plainLine(line: string): string {
 }
 
 /** "not implemented", "hasn't been fixed", "could not be fixed": a done-word that says it wasn't done. */
-const NEGATED_DONE = /\b(not|n't|never|unable to|without being)\s+(?:\w+\s+){0,2}(implemented|fixed|resolved)\b/;
+const NEGATED_DONE = /(?:\bnot|n't|\bnever|\bunable to|\bwithout being)\s+(?:\w+\s+){0,2}(implemented|fixed|resolved)\b/;
 
 function classify(text: string): Verdict {
   const t = plainLine(text).toLowerCase();
   const negated = NEGATED_DONE.test(t);
-  if (!negated && /\bimplemented\b/.test(t)) return "implemented";
-  if (!negated && /\b(fixed|committed as|resolved)\b/.test(t)) return "fixed";
+  // Waiting on the owner wins over done-words: "triage note committed as abc; needs your decision".
   if (/\b(needs?|awaiting|requires)\b.{0,20}\b(decision|owner|input|call)\b/.test(t) || /\bfeature idea\b/.test(t)) {
     return "needs_decision";
   }
+  if (!negated && /\bimplemented\b/.test(t)) return "implemented";
+  if (!negated && /\bfixed\b(?!-)|\bcommitted as\b|\bresolved\b/.test(t)) return "fixed";
   if (/\b(can't|cannot|could ?not|unable to) reproduce\b/.test(t)) return "cant_reproduce";
   if (/\bduplicate of\b|^duplicate\b/.test(t)) return "duplicate";
   if (/\bnot actionable\b/.test(t)) return "not_actionable";
@@ -82,6 +83,12 @@ export function parseVerdict(summary: string | null | undefined): Verdict {
   }
   const first = summary.split("\n").find((line) => line.trim());
   return first ? classify(first) : "unknown";
+}
+
+/** The verdict of a report's "Verdict:" line only, or null without one: what automatic releases go by. */
+export function explicitVerdict(summary: string | null | undefined): Verdict | null {
+  const line = summary?.split("\n").findLast((l) => /^\W*verdict\W*:/i.test(plainLine(l)));
+  return line ? classify(plainLine(line).replace(/^\W*verdict\W*:\s*/i, "")) : null;
 }
 
 /** Verdicts that mean the item's changes are the work it asked for, so it can be released without the owner. */

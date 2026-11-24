@@ -8,7 +8,7 @@ import { RepoState } from "./changes.ts";
 import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolvesToCommit } from "./git.ts";
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { agentOutput, buildPrompt, releaseOutcome, type PreviousRun } from "./prompt.ts";
-import { RELEASABLE_VERDICTS, parseVerdict } from "./report.ts";
+import { autoReleaseBlocker } from "./items.ts";
 import { ACTIVE_STATUSES, INTERRUPTED, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
 import { parseWatchOutput, runWatchCommand, type WatchResult } from "./watch.ts";
 
@@ -63,8 +63,10 @@ export function slugify(name: string): string {
 export interface RunnerEvents {
   /** A run finished; `retrying` when a retry of it is queued. */
   finished: [run: Run, info: { retrying: boolean }];
-  /** A run from the schedule, webhook or watch waits for the owner's approval. */
-  awaiting: [run: Run];
+  /** Runs from the schedule, webhook or watch wait for the owner's approval (a watch check's together). */
+  awaiting: [runs: Run[]];
+  /** A run autoRelease would have released couldn't be queued (it needs the owner). */
+  autoReleaseFailed: [run: Run, error: string];
   /** A job's watch command started failing (it had worked, or not run, before). */
   watchFailed: [job: Job, error: string];
 }
@@ -104,7 +106,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
   }
 
   /** Queues a run. `pump: false` leaves starting it to the caller, e.g. after its transaction commits. */
-  trigger(job: Job, trigger: Trigger, payload: string | null = null, { pump = true } = {}): TriggerResult {
+  trigger(job: Job, trigger: Trigger, payload: string | null = null, { pump = true, announce = true } = {}): TriggerResult {
     if (trigger === "schedule" && this.store.countRuns(job.id, ACTIVE_STATUSES) > 0) {
       return { skipped: "a run of this job is already queued or running" };
     }
@@ -115,7 +117,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
     const approval = job.approveRuns && trigger !== "manual";
     const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued");
     this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, agent: ${agent})`);
-    if (approval) this.emit("awaiting", run);
+    if (approval && announce) this.emit("awaiting", [run]);
     if (pump) this.pump();
     return { run: this.store.getRun(run.id)! };
   }
@@ -161,6 +163,9 @@ export class Runner extends EventEmitter<RunnerEvents> {
     const work = runs.filter((run) => run.mode !== "ask").at(-1);
     if (!work || (work.status !== "succeeded" && !RELEASE_MODES.includes(work.mode))) {
       throw new ReleaseRefusedError("Only a succeeded result can be released: follow up until a run succeeds");
+    }
+    if (RELEASE_MODES.includes(work.mode) && work.status === "succeeded") {
+      throw new ReleaseRefusedError("This item is already released: make changes first to release something new");
     }
     const latest = runs.at(-1)!;
     const head = await this.itemHead(job, latest).catch((error: Error) => {
@@ -277,7 +282,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         try {
           // The run and the record of its item are written together, so a crash can't start an item twice.
           const started = this.store.transaction(() => {
-            const triggered = this.trigger(latest, "watch", item.payload, { pump: false });
+            const triggered = this.trigger(latest, "watch", item.payload, { pump: false, announce: false });
             if ("run" in triggered) this.store.recordItem(job.id, item.id, triggered.run.id);
             return triggered;
           });
@@ -295,6 +300,8 @@ export class Runner extends EventEmitter<RunnerEvents> {
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
     }
+    const waiting = result.runs.filter((run) => run.status === "awaiting_approval");
+    if (waiting.length > 0) this.emit("awaiting", waiting);
     const before = this.store.getJob(job.id)?.watchError ?? null;
     this.store.setWatchResult(job.id, result.error);
     if (result.error && !before) this.emit("watchFailed", job, result.error);
@@ -497,6 +504,9 @@ export class Runner extends EventEmitter<RunnerEvents> {
       if (release && exitCode === 0 && !active.stopReason) {
         releaseError = releaseOutcome(this.readSummary(run.id)) ?? (await this.releasedCheck(job, run.id, baseCommit));
         if (!releaseError) releaseError = await this.verify(job, run, active, worktree, deadline);
+      } else if (release && active.stopReason === "timed_out" && (await this.releasedCheck(job, run.id, baseCommit)) === null) {
+        // Cut off by its timeout after its result went out: the owner must check before releasing again.
+        releaseError = `It timed out, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`;
       }
       // What a release leaves unreleased: commits not on the base branch it pushed to (a rebase there brings in others' commits).
       const commits = release ? await this.unreleasedCommits(job, worktree, baseCommit) : committed.commits;
@@ -632,7 +642,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         this.note(runId, `Could not fetch ${branch} to check the release (${(error as Error).message}); using the last fetched tip`);
       }
     }
-    const released = await git(job.repoPath, ["merge-base", "--is-ancestor", commit, target]).then(() => true, () => false);
+    const released = await isReleased(job.repoPath, commit, target);
     this.note(runId, released ? `The item's result is on ${target.replace("refs/remotes/", "")}` : `The item's result (${commit.slice(0, 12)}) is not on ${target.replace("refs/remotes/", "")}`);
     return released ? null : `The item's result isn't on ${target.replace("refs/remotes/", "")}, so it wasn't released`;
   }
@@ -663,7 +673,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       if (!run.branch || run.worktree || run.id === release.id) continue;
       const tip = await git(job.repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${run.branch}`]).catch(() => null);
       if (!tip) continue;
-      const released = await git(job.repoPath, ["merge-base", "--is-ancestor", tip, target]).then(() => true, () => false);
+      const released = await isReleased(job.repoPath, tip, target);
       if (released && (await git(job.repoPath, ["branch", "-D", run.branch]).then(() => true, () => false))) pruned.push(run.branch);
     }
     if (pruned.length > 0) this.note(release.id, `Deleted released branches: ${pruned.join(", ")}`);
@@ -692,17 +702,18 @@ export class Runner extends EventEmitter<RunnerEvents> {
    */
   private async autoRelease(job: Job, run: Run): Promise<void> {
     if (!job.autoRelease || !job.enabled || (!job.releaseInstructions && !job.shipCommand)) return;
-    const verdict = parseVerdict(run.summary);
-    if (run.checkStatus !== "passed" || !RELEASABLE_VERDICTS.includes(verdict)) {
-      const why = run.checkStatus !== "passed" ? "its check didn't pass" : `its report's verdict is ${verdict.replace("_", " ")}`;
-      this.note(run.id, `Not releasing automatically: ${why}; release it by hand if it's ready`);
+    const blocker = autoReleaseBlocker(job, run);
+    if (blocker) {
+      this.note(run.id, `Not releasing automatically: ${blocker}; release it by hand if it's ready`);
       return;
     }
     try {
       const release = await this.release(run, { auto: true });
       this.note(run.id, `Releasing automatically: run #${release.id}`);
     } catch (error) {
-      this.note(run.id, `Could not release automatically: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      this.note(run.id, `Could not release automatically: ${message}`);
+      this.emit("autoReleaseFailed", run, message);
     }
   }
 
@@ -882,6 +893,16 @@ export class Runner extends EventEmitter<RunnerEvents> {
   private note(runId: number, message: string): void {
     appendFileSync(this.logPath(runId), `[pi-jobs ${new Date().toISOString()}] ${message}\n`);
   }
+}
+
+/**
+ * Whether a commit is on the base branch: itself, or (after a rebase gave its commits new ids) every
+ * change it made since it left the base, by patch (`git cherry`).
+ */
+async function isReleased(repo: string, commit: string, target: string): Promise<boolean> {
+  if (await git(repo, ["merge-base", "--is-ancestor", commit, target]).then(() => true, () => false)) return true;
+  const missing = await git(repo, ["cherry", target, commit]).catch(() => "+");
+  return !missing.split("\n").some((line) => line.startsWith("+"));
 }
 
 /** How a run ended: how it was stopped, if it was, else whether it did its work. */

@@ -24,8 +24,11 @@ export function runRoutes(ctx: AppContext): Route[] {
       "GET",
       /^\/api\/items$/,
       async (_req, _params, url) => {
-        // Newest activity first; ?waiting=1 keeps only items waiting on the owner.
-        const ids = store.itemIds({ jobId: intParam(url, "jobId"), limit: intParam(url, "limit") ?? 100 });
+        // Newest activity first. ?waiting=1 keeps only items waiting on the owner; without it, items
+        // waiting on the owner come too even when they are older than the newest `limit`, so the
+        // Inbox never loses one. Both look at the newest 500 items.
+        const limit = Math.min(Math.max(intParam(url, "limit") ?? 100, 1), 500);
+        const ids = store.itemIds({ jobId: intParam(url, "jobId"), limit: 500 });
         const runs = store.runsOfItems(ids);
         const merged = await runner.repos.mergedRuns(runs);
         const byItem = new Map<number, ReturnType<typeof listRunView>[]>();
@@ -34,7 +37,9 @@ export function runRoutes(ctx: AppContext): Route[] {
           const itemRuns = byItem.get(id);
           return itemRuns ? [itemView(itemRuns, store.getJob(itemRuns[0]!.jobId))] : [];
         });
-        return url.searchParams.get("waiting") === "1" ? items.filter((item) => WAITING_STATES.includes(item.state)) : items;
+        const waiting = (item: (typeof items)[number]) => WAITING_STATES.includes(item.state);
+        if (url.searchParams.get("waiting") === "1") return items.filter(waiting);
+        return items.filter((item, index) => index < limit || waiting(item));
       },
     ],
     [
@@ -61,7 +66,9 @@ export function runRoutes(ctx: AppContext): Route[] {
       "GET",
       /^\/api\/runs\/(\d+)\/release-preview$/,
       async (_req, [id]) => {
-        const preview = await runner.releasePreview(ctx.findRun(id));
+        const preview = await runner.releasePreview(ctx.findRun(id)).catch((error: Error) => {
+          throw new HttpError(409, error.message);
+        });
         if (!preview) throw new HttpError(404, "This item has no changes to release");
         return preview;
       },

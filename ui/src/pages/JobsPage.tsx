@@ -99,13 +99,13 @@ export function JobsPage() {
                   <AgentBadge agent={job.effectiveAgent} inherited={job.agent === null} />
                 </div>
 
-                <div className="flex min-w-0 items-center gap-2.5 text-[13px]">
+                <div className="flex min-w-0 items-center gap-2.5 overflow-hidden text-[13px]">
                   {job.lastRun ? (
-                    <Link to={`/runs/${job.lastRun.id}`} className="flex items-center gap-2.5 hover:text-bone">
+                    <Link to={`/runs/${job.lastRun.id}`} className="flex min-w-0 items-center gap-2.5 hover:text-bone">
                       <span className="shrink-0">
                         <StatusPill status={job.lastRun.status} />
                       </span>
-                      <span className="truncate text-fog">{relativeTime(job.lastRun.createdAt, now)}</span>
+                      <span className="min-w-0 truncate text-fog">{relativeTime(job.lastRun.createdAt, now)}</span>
                     </Link>
                   ) : (
                     <span className="text-fog">Never run</span>

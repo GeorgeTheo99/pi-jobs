@@ -1,4 +1,5 @@
 import { isBuiltinAgent } from "./agents.ts";
+import { itemHeadCommit } from "./items.ts";
 import type { ChatAction, Job, Run, Settings, Store } from "./store.ts";
 
 /**
@@ -346,10 +347,15 @@ const DEFINITIONS: Record<string, Definition> = {
           ? [{ field: "releaseInstructions", before: null, after: job.releaseInstructions }]
           : [{ field: "shipCommand", before: null, after: job.shipCommand }],
         risky: true,
-        basis: job.updatedAt,
+        // Refused once the job or the item changed: a new run, or new commits, since the proposal.
+        basis: `${job.updatedAt} ${store.itemRuns(run.itemId).at(-1)!.id} ${itemHeadCommit(store.itemRuns(run.itemId)) ?? ""}`,
       };
     },
-    request: (args, store) => ({ method: "POST", path: `/api/runs/${findRun(args, store).id}/release` }),
+    request(args, store) {
+      const run = findRun(args, store);
+      const head = itemHeadCommit(store.itemRuns(run.itemId));
+      return { method: "POST", path: `/api/runs/${run.id}/release`, body: head ? { expectedHead: head } : {} };
+    },
     outcome: (response) => ({ text: `Started release run #${(response as Run).id}` }),
   },
   close_item: {
@@ -385,7 +391,7 @@ const DEFINITIONS: Record<string, Definition> = {
       return {
         title: `Change settings: ${changes.map((c) => c.field).join(", ")}`,
         changes,
-        risky: changes.some((c) => c.field.startsWith("agents.") || c.field === "notifyCommand"),
+        risky: changes.some((c) => c.field.startsWith("agents.") || c.field === "notifyCommand" || c.field === "publicUrl"),
         basis: JSON.stringify(settingsBody(settings)),
       };
     },

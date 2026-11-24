@@ -35,6 +35,12 @@ switch (mode) {
     execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
     console.log(`Released\nversion ${version} is on main`);
     break;
+  case "rebase-release":
+    // Like a release onto a main that moved: rebase (new commit ids), then push.
+    execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@example.com", "pull", "-q", "--rebase", "origin", "main"]);
+    execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
+    console.log("Released\nrebased onto main and pushed");
+    break;
   case "implemented":
     writeFileSync("feature.txt", "done\n");
     console.log("Implemented the feature.\nVerdict: implemented on this branch");

@@ -394,6 +394,13 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               }}
             />
             {fields.autoRelease && <p className="-mt-3 text-[12px] text-red">{fields.autoRelease}</p>}
+            {draft.autoRelease && !draft.approveRuns && (draft.webhookEnabled || draft.watchCommand.trim()) && (
+              <p className="-mt-3 text-[12px] leading-snug text-amber">
+                With Approve before running off, a report from the {draft.watchCommand.trim() ? "watch" : "webhook"} can go to a release without
+                anyone reading it. The agent treats reports as data, and the check and the report's verdict gate the release, but the agent
+                writes both. Keep Approve before running on unless you trust where reports come from.
+              </p>
+            )}
           </Section>
 
           <div className="save-bar flex flex-wrap items-center gap-3">

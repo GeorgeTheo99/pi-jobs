@@ -80,7 +80,7 @@ function PreviewFacts({ preview }: { preview: ReleasePreview }) {
   return (
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-1.5 rounded-[12px] border border-steel/30 bg-inkwell/40 px-4 py-3 text-[13px]">
       <dt className="text-fog">Releases</dt>
-      <dd className="min-w-0 truncate text-bone">
+      <dd className="min-w-0 break-words text-bone">
         <span className="font-mono">{preview.head.slice(0, 12)}</span> ({preview.headLabel}) · {preview.ahead} commit{preview.ahead === 1 ? "" : "s"}, {preview.files}{" "}
         file{preview.files === 1 ? "" : "s"}, <span className="text-green">+{preview.additions}</span> <span className="text-red">−{preview.deletions}</span>
       </dd>

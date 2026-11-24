@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ItemList, WaitingCard } from "@/components/Items";
 import { ErrorNote, PageHeader, Skeleton } from "@/components/ui";
-import { api, type Job } from "@/lib/api";
+import { api, isReleaseMode, type Job } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { WAITING_STATES, type Item, type ItemState } from "@/lib/items";
 import { useItems } from "@/lib/useItems";
@@ -51,23 +51,27 @@ export function InboxPage() {
   const pick = (states: readonly ItemState[]) => items?.filter((item) => states.includes(item.state)) ?? [];
   // Failures first (a half-done release most of all), then approvals, decisions and reviews; oldest first within each.
   const order: ItemState[] = ["failed", "approval", "decision", "review"];
-  const waiting = [...pick(WAITING_STATES)].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.latest.id - b.latest.id);
+  const rank = (item: Item) => (item.state === "failed" && isReleaseMode(item.latestWork.mode) ? -1 : order.indexOf(item.state));
+  const waiting = [...pick(WAITING_STATES)].sort((a, b) => rank(a) - rank(b) || a.latest.id - b.latest.id);
   const approvals = waiting.filter((item) => item.state === "approval");
   const running = pick(["running"]);
   const recent = pick(["released", "merged", "closed"]);
 
   const bulk = async (action: "approve" | "dismiss") => {
     setBulkError(null);
-    try {
-      for (const item of approvals) {
-        const run = item.runs.find((r) => r.status === "awaiting_approval");
-        if (run) await (action === "approve" ? api.approveRun(run.id) : api.cancelRun(run.id));
+    // One that can't start (its job is paused, say) doesn't stop the rest.
+    const failures: string[] = [];
+    for (const item of approvals) {
+      const run = item.runs.find((r) => r.status === "awaiting_approval");
+      if (!run) continue;
+      try {
+        await (action === "approve" ? api.approveRun(run.id) : api.cancelRun(run.id));
+      } catch (err) {
+        failures.push(`#${run.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      setBulkError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      await refresh();
     }
+    if (failures.length > 0) setBulkError(new Error(failures.join("; ")));
+    await refresh();
   };
 
   return (
