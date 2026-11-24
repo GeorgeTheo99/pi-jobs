@@ -148,6 +148,41 @@ ships.
   and runs with your credentials. The agent could already run anything as you (see Safety), but
   review **Changes** before shipping, especially changes to the script itself.
 
+### Chat
+
+**Chat** manages pi-jobs by asking, from any browser: "set up a nightly job that checks
+model-gateway for new models", "why did run #41 fail?", "pause the triage jobs", "approve what's
+waiting", "switch Claude Code's command to my config directory". **Chat about it** on a job or an
+item starts one with that context.
+
+- **The agent reads, you change.** Each message runs the job agent from Settings once, in the
+  chat's own directory, with the current state of pi-jobs (settings, jobs, API token names, recent
+  runs, and the chat's job or item in full) and the paths of run logs. It can read run logs and
+  repositories, and ends its reply with the changes it proposes. Each change is a card; nothing
+  happens until you **Apply** it.
+- **Cards are API calls.** Applying a card makes the same request as the matching button, with the
+  same validation: create, change, pause or delete a job, Run now, check a watch, Ask or Make
+  changes on an item, approve, dismiss, cancel, Ship, close or mark replied, change Settings
+  (agent commands too), create or revoke an API token, replace a webhook token. A card says what
+  it does and shows the exact old and new value of every field it changes. If its job or the
+  settings changed since it was proposed, applying it fails and asks for a fresh proposal.
+- **Review carefully.** Cards that set commands (check, watch, ship, agent), push branches, turn
+  on a webhook, move a job to another repository, ship, delete, or touch tokens are marked and are
+  never part of **Apply all**. Instructions, payloads, reports and logs that the agent reads were
+  written by others, so read these cards in full before applying them.
+- **Secrets stay out of the conversation.** The agent never sees a token's value. A token a card
+  creates or replaces appears once, on that card in your browser; it isn't stored with the chat
+  or sent to the agent, which hears only that it was created.
+- **One conversation.** With Pi, a chat's messages continue one session, and each turn tells the
+  agent what became of the changes it proposed last. Other agents get the conversation so far in
+  the prompt. One reply is written at a time per chat (at most 4 at once), for up to 15 minutes;
+  **Stop** ends one. Pi's `jobs_*` tools aren't loaded in a chat's agent: it proposes, never acts.
+
+The API: `GET`/`POST /api/chats` (`{"message", "jobId"?, "runId"?}`), `GET`/`DELETE
+/api/chats/<id>`, `POST /api/chats/<id>/messages` and `/cancel`, `GET
+/api/chats/<id>/turns/<turn>/log`, and `POST /api/chats/<id>/turns/<turn>/actions/<index>` with
+`{"decision": "apply" | "dismiss"}` (the response carries a created token's value, once).
+
 ### The Inbox
 
 The home page groups runs into **items**: a run started by a trigger, with its retries and
@@ -279,8 +314,9 @@ To serve pi-jobs under a path such as `/pi-jobs/` (Caddy, Tailscale Serve, nginx
 | Uninstall | `launchctl bootout gui/$(id -u)/com.local.pi-jobs && rm ~/Library/LaunchAgents/com.local.pi-jobs.plist` |
 | Server log | `~/.local/state/pi-jobs/server.log` |
 
-State lives in `~/.local/state/pi-jobs/`: `pi-jobs.db` (SQLite: jobs, runs, settings, token hashes),
-`runs/<id>.log`, and `worktrees/` for kept worktrees. Watch items seen are kept per job (`watch_items`). Restarting the server fails runs that were
+State lives in `~/.local/state/pi-jobs/`: `pi-jobs.db` (SQLite: jobs, runs, chats, settings, token
+hashes), `runs/<id>.log`, `chats/` (each chat's working directory and reply logs), and `worktrees/`
+for kept worktrees. Watch items seen are kept per job (`watch_items`). Restarting the server fails runs that were
 in progress (and retries them if their job allows). Queued runs resume, and runs waiting for
 approval keep waiting.
 

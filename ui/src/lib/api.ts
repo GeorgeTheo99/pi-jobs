@@ -110,6 +110,59 @@ export interface JobDraft {
   enabled: boolean;
 }
 
+export type ChatTurnStatus = "running" | "succeeded" | "failed" | "canceled";
+export type ChatActionStatus = "proposed" | "applied" | "failed" | "dismissed" | "invalid";
+
+/** A change the chat's agent proposed; nothing happens until the owner applies it. */
+export interface ChatAction {
+  type: string;
+  args: Record<string, unknown>;
+  title: string;
+  /** Exact before/after values of what it changes. */
+  changes: { field: string; before: unknown; after: unknown }[];
+  /** Shown in full and applied one at a time, never with Apply all. */
+  risky: boolean;
+  basis: string | null;
+  status: ChatActionStatus;
+  result: string | null;
+  error: string | null;
+}
+
+export interface ChatTurn {
+  id: number;
+  chatId: number;
+  message: string;
+  reply: string | null;
+  actions: ChatAction[];
+  status: ChatTurnStatus;
+  error: string | null;
+  exitCode: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface Chat {
+  id: number;
+  title: string;
+  jobId: number | null;
+  runId: number | null;
+  agent: AgentId;
+  sessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** A reply is being written. */
+  busy: boolean;
+}
+
+export interface ChatWithTurns extends Chat {
+  turns: ChatTurn[];
+}
+
+export interface ChatSummary extends Chat {
+  lastTurn: ChatTurn | null;
+}
+
 export interface ChangedFile {
   path: string;
   oldPath: string | null;
@@ -236,6 +289,18 @@ export const api = {
   markReplied: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/replied`, { value }),
   markClosed: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/closed`, { value }),
   checkWatches: () => request<{ jobId: number; started: number; error: string | null }[]>("POST", "/api/watches/check"),
+  chats: () => request<ChatSummary[]>("GET", "/api/chats"),
+  chat: (id: number) => request<ChatWithTurns>("GET", `/api/chats/${id}`),
+  /** Starts a chat, optionally about a job or an item (any of its runs), with its first message. */
+  createChat: (message: string, about: { jobId?: number; runId?: number } = {}) =>
+    request<ChatWithTurns>("POST", "/api/chats", { message, ...about }),
+  sendChat: (id: number, message: string) => request<ChatWithTurns>("POST", `/api/chats/${id}/messages`, { message }),
+  cancelChat: (id: number) => request<ChatWithTurns>("POST", `/api/chats/${id}/cancel`),
+  deleteChat: (id: number) => request<{ ok: true }>("DELETE", `/api/chats/${id}`),
+  chatLog: (id: number, turnId: number, offset: number) => request<LogChunk>("GET", `/api/chats/${id}/turns/${turnId}/log?offset=${offset}`),
+  /** Applies or dismisses a proposed action; `secret` (a new token) comes only in this response. */
+  decideAction: (id: number, turnId: number, index: number, decision: "apply" | "dismiss") =>
+    request<{ action: ChatAction; secret?: string }>("POST", `/api/chats/${id}/turns/${turnId}/actions/${index}`, { decision }),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
   schedulePreview: (expression: string) =>

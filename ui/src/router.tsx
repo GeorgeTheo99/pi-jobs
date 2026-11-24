@@ -1,6 +1,7 @@
 import { createBrowserRouter } from "react-router-dom";
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
+import { ChatPage, ChatsPage } from "./pages/ChatPage";
 import { InboxPage } from "./pages/InboxPage";
 import { JobPage } from "./pages/JobPage";
 import { JobsPage } from "./pages/JobsPage";
@@ -21,6 +22,8 @@ export const router = createBrowserRouter([
     ),
     children: [
       { path: "/", element: <InboxPage /> },
+      { path: "/chats", element: <ChatsPage /> },
+      { path: "/chats/:id", element: <ChatPage /> },
       { path: "/jobs", element: <JobsPage /> },
       { path: "/jobs/new", element: <JobPage /> },
       { path: "/jobs/:id", element: <JobPage /> },

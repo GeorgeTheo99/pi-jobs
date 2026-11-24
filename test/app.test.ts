@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { createApp } from "../src/app.ts";
+import { ChatRunner } from "../src/chat.ts";
 import { loadConfig } from "../src/config.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import type { Run } from "../src/store.ts";
@@ -14,13 +15,15 @@ async function startApp(t: TestContext) {
   const ctx = setup();
   const config = { ...loadConfig({}), stateDir: path.join(ctx.root, "state"), uiDir: path.join(ctx.root, "no-ui"), repoRoots: [ctx.root] };
   const scheduler = new Scheduler(() => {});
-  const server = createServer(createApp({ config, store: ctx.store, runner: ctx.runner, scheduler }));
+  const chats = new ChatRunner({ store: ctx.store, stateDir: config.stateDir, killGraceMs: 500 });
+  const server = createServer(createApp({ config, store: ctx.store, runner: ctx.runner, scheduler, chats }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const { secret } = ctx.store.createToken("test");
   t.after(async () => {
     scheduler.stop();
     server.close();
+    await chats.shutdown();
     await ctx.cleanup();
   });
 
@@ -48,7 +51,7 @@ async function startApp(t: TestContext) {
       req.on("error", reject);
       req.end(data);
     });
-  return { ...ctx, call, scheduler, secret };
+  return { ...ctx, call, scheduler, secret, chats };
 }
 
 test("jobs can be created, listed, updated and deleted", async (t) => {

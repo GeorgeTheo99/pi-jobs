@@ -110,6 +110,59 @@ export type RunPatch = Partial<
 export const DEFAULT_RETRIES = 2;
 export const MAX_RETRIES = 5;
 
+/** A conversation with an agent about managing pi-jobs, optionally about one job or item. */
+export interface Chat {
+  id: number;
+  title: string;
+  /** The job or item (any of its runs) the chat started from, for context; null for a general chat. */
+  jobId: number | null;
+  runId: number | null;
+  agent: AgentId;
+  /** The agent session every turn continues; null for agents without sessions. */
+  sessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ChatTurnStatus = "running" | "succeeded" | "failed" | "canceled";
+export type ChatActionStatus = "proposed" | "applied" | "failed" | "dismissed" | "invalid";
+
+/** A change the chat's agent proposed; it happens only when the owner applies it. */
+export interface ChatAction {
+  /** The action's type and arguments, as the agent proposed them. */
+  type: string;
+  args: Record<string, unknown>;
+  /** What it does, in a sentence. */
+  title: string;
+  /** Exact before/after values for the fields it changes, shown on its card. */
+  changes: { field: string; before: unknown; after: unknown }[];
+  /** Shown in full and applied one at a time, never with Apply all. */
+  risky: boolean;
+  /** What the target looked like when proposed; applying refuses if it has changed since. */
+  basis: string | null;
+  status: ChatActionStatus;
+  /** What applying it did, without secrets. */
+  result: string | null;
+  error: string | null;
+}
+
+/** One message from the owner and the agent's reply, with the actions it proposed. */
+export interface ChatTurn {
+  id: number;
+  chatId: number;
+  message: string;
+  reply: string | null;
+  actions: ChatAction[];
+  status: ChatTurnStatus;
+  error: string | null;
+  exitCode: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export type ChatTurnPatch = Partial<Pick<ChatTurn, "reply" | "actions" | "status" | "error" | "exitCode" | "startedAt" | "finishedAt">>;
+
 export interface Settings {
   defaultAgent: AgentId;
   agents: Record<AgentId, { command: string }>;
@@ -172,6 +225,31 @@ CREATE TABLE IF NOT EXISTS watch_items (
   seen_at TEXT NOT NULL,
   PRIMARY KEY (job_id, item_id)
 );
+CREATE TABLE IF NOT EXISTS chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+  agent TEXT NOT NULL,
+  session_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- AUTOINCREMENT: turn ids name log files.
+CREATE TABLE IF NOT EXISTS chat_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  message TEXT NOT NULL,
+  reply TEXT,
+  actions TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  error TEXT,
+  exit_code INTEGER,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_turns_by_chat ON chat_turns(chat_id, id);
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -272,6 +350,35 @@ function toJob(row: Row): Job {
   };
 }
 
+function toChat(row: Row): Chat {
+  return {
+    id: Number(row.id),
+    title: String(row.title),
+    jobId: row.job_id == null ? null : Number(row.job_id),
+    runId: row.run_id == null ? null : Number(row.run_id),
+    agent: row.agent as AgentId,
+    sessionId: (row.session_id as string | null) ?? null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toTurn(row: Row): ChatTurn {
+  return {
+    id: Number(row.id),
+    chatId: Number(row.chat_id),
+    message: String(row.message),
+    reply: (row.reply as string | null) ?? null,
+    actions: JSON.parse(String(row.actions ?? "[]")) as ChatAction[],
+    status: row.status as ChatTurnStatus,
+    error: (row.error as string | null) ?? null,
+    exitCode: row.exit_code == null ? null : Number(row.exit_code),
+    createdAt: String(row.created_at),
+    startedAt: (row.started_at as string | null) ?? null,
+    finishedAt: (row.finished_at as string | null) ?? null,
+  };
+}
+
 function toRun(row: Row): Run {
   const num = (v: SQLInputValue | undefined) => (v == null ? null : Number(v));
   return {
@@ -337,6 +444,84 @@ export class Store {
       items.set(row.id, item);
       if (row.item_id === null) update.run(item, row.id);
     }
+  }
+
+  createChat(input: { title: string; jobId: number | null; runId: number | null; agent: AgentId; sessionId: string | null }): Chat {
+    const ts = now();
+    const result = this.db
+      .prepare("INSERT INTO chats (title, job_id, run_id, agent, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(input.title, input.jobId, input.runId, input.agent, input.sessionId, ts, ts);
+    return this.getChat(Number(result.lastInsertRowid))!;
+  }
+
+  getChat(id: number): Chat | null {
+    const row = this.db.prepare("SELECT * FROM chats WHERE id = ?").get(id);
+    return row ? toChat(row as Row) : null;
+  }
+
+  /** Newest activity first. */
+  listChats(limit = 50): Chat[] {
+    return this.db
+      .prepare("SELECT * FROM chats ORDER BY updated_at DESC, id DESC LIMIT ?")
+      .all(limit)
+      .map((r) => toChat(r as Row));
+  }
+
+  touchChat(id: number): void {
+    this.db.prepare("UPDATE chats SET updated_at = ? WHERE id = ?").run(now(), id);
+  }
+
+  deleteChat(id: number): void {
+    this.db.prepare("DELETE FROM chats WHERE id = ?").run(id);
+  }
+
+  createTurn(chatId: number, message: string): ChatTurn {
+    const ts = now();
+    const result = this.db
+      .prepare("INSERT INTO chat_turns (chat_id, message, status, created_at, started_at) VALUES (?, ?, 'running', ?, ?)")
+      .run(chatId, message, ts, ts);
+    this.touchChat(chatId);
+    return this.getTurn(Number(result.lastInsertRowid))!;
+  }
+
+  getTurn(id: number): ChatTurn | null {
+    const row = this.db.prepare("SELECT * FROM chat_turns WHERE id = ?").get(id);
+    return row ? toTurn(row as Row) : null;
+  }
+
+  /** Oldest first. */
+  chatTurns(chatId: number): ChatTurn[] {
+    return this.db
+      .prepare("SELECT * FROM chat_turns WHERE chat_id = ? ORDER BY id")
+      .all(chatId)
+      .map((r) => toTurn(r as Row));
+  }
+
+  updateTurn(id: number, patch: ChatTurnPatch): ChatTurn {
+    const columns: Record<keyof ChatTurnPatch, string> = {
+      reply: "reply",
+      actions: "actions",
+      status: "status",
+      error: "error",
+      exitCode: "exit_code",
+      startedAt: "started_at",
+      finishedAt: "finished_at",
+    };
+    const entries = Object.entries(patch) as [keyof ChatTurnPatch, unknown][];
+    if (entries.length > 0) {
+      const sets = entries.map(([key]) => `${columns[key]} = ?`).join(", ");
+      const values = entries.map(([key, value]) => (key === "actions" ? JSON.stringify(value) : (value as SQLInputValue)));
+      this.db.prepare(`UPDATE chat_turns SET ${sets} WHERE id = ?`).run(...values, id);
+    }
+    return this.getTurn(id)!;
+  }
+
+  /** Turns cut off by a server stop can't be resumed; returns them, now failed. */
+  failInterruptedTurns(): ChatTurn[] {
+    return this.db
+      .prepare("UPDATE chat_turns SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running' RETURNING *")
+      .all("The server stopped while the agent was replying", now())
+      .map((r) => toTurn(r as Row));
   }
 
   close(): void {

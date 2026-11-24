@@ -1,4 +1,4 @@
-import { Check, MessageCircleQuestion, Rocket, Square, Wrench } from "lucide-react";
+import { Check, MessageCircleQuestion, MessagesSquare, Rocket, Square, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Changes } from "@/components/Changes";
@@ -79,6 +79,10 @@ export function RunPage() {
                 {activeRun.status === "queued" ? "Cancel" : "Stop"}
               </button>
             )}
+            <Link to={`/chats?runId=${item.latest.id}`} className="btn btn-ghost">
+              <MessagesSquare aria-hidden className="size-3.5" />
+              Chat about it
+            </Link>
             {job && canShip(item, job.shipCommand) && (
               <button
                 type="button"

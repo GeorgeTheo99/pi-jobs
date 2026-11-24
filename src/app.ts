@@ -1,15 +1,18 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { Readable } from "node:stream";
 import { open, readFile, rm, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_IDS, AGENT_PRESETS, buildArgv, commandProgram, isAgentId, resolveExecutable } from "./agents.ts";
+import { applyAction, type CallApi } from "./actions.ts";
+import { ChatBusyError, type ChatRunner } from "./chat.ts";
 import type { Config } from "./config.ts";
 import { JobPausedError, QueueFullError, ShipRefusedError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
-import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
+import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Chat, type Job, type JobInput, type Settings, type Store } from "./store.ts";
 
 /** Bumped on incompatible API changes; clients check it through /api/health. */
 export const API_VERSION = 1;
@@ -34,6 +37,7 @@ export interface AppDeps {
   store: Store;
   runner: Runner;
   scheduler: Scheduler;
+  chats: ChatRunner;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -51,7 +55,7 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 export function createApp(deps: AppDeps) {
-  const { config, store, runner, scheduler } = deps;
+  const { config, store, runner, scheduler, chats } = deps;
   const envPath = (deps.env ?? process.env).PATH ?? "";
   const sessions = new WeakMap<IncomingMessage, ApiToken>();
   let checkoutCache: { at: number; checkouts: Promise<Checkout[]> } | null = null;
@@ -90,6 +94,47 @@ export function createApp(deps: AppDeps) {
       }),
     ),
   });
+
+  const findChat = (id: string | undefined): Chat => {
+    const chat = store.getChat(Number(id));
+    if (!chat) throw new HttpError(404, "Chat not found");
+    return chat;
+  };
+
+  const chatView = (chat: Chat) => ({ ...chat, busy: chats.isBusy(chat.id), turns: store.chatTurns(chat.id) });
+
+  const chatMessage = (body: Record<string, unknown>): string => {
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    if (!message) throw new HttpError(400, "Fix the highlighted fields", { message: "Write a message" });
+    if (message.length > MAX_INSTRUCTIONS) throw new HttpError(400, "Fix the highlighted fields", { message: `Keep it under ${MAX_INSTRUCTIONS} characters` });
+    return message;
+  };
+
+  const sendMessage = (chat: Chat, message: string) => {
+    try {
+      chats.send(chat, message);
+    } catch (error) {
+      if (error instanceof ChatBusyError) throw new HttpError(409, error.message);
+      throw error;
+    }
+    return chatView(store.getChat(chat.id)!);
+  };
+
+  /**
+   * A chat action's API call, made in-process through the same routes (and so the same validation)
+   * as a request from the UI.
+   */
+  const callApi: CallApi = async ({ method, path: pathname, body }) => {
+    const url = new URL(pathname, "http://localhost");
+    const route = routes.find(([m, pattern]) => m === method && pattern.test(url.pathname));
+    if (!route || url.pathname.startsWith("/api/chats")) throw new HttpError(404, "Not found");
+    const req = Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]), {
+      method,
+      url: pathname,
+      headers: { "content-type": "application/json" },
+    }) as unknown as IncomingMessage;
+    return route[2](req, route[1].exec(url.pathname)!.slice(1), url);
+  };
 
   const routes: [string, RegExp, Handler][] = [
     ["GET", /^\/api\/health$/, async () => ({ ok: true, apiVersion: API_VERSION, version: PACKAGE_VERSION })],
@@ -394,6 +439,80 @@ export function createApp(deps: AppDeps) {
         const expression = url.searchParams.get("expression")?.trim() ?? "";
         const error = expression ? cronError(expression) : "Enter a cron expression";
         return error ? { valid: false, error, next: [] } : { valid: true, error: null, next: nextRuns(expression, 3) };
+      },
+    ],
+    ["GET", /^\/api\/chats$/, async () => store.listChats().map((chat) => ({ ...chat, busy: chats.isBusy(chat.id), lastTurn: store.chatTurns(chat.id).at(-1) ?? null }))],
+    [
+      "POST",
+      /^\/api\/chats$/,
+      async (req) => {
+        const body = await readJson(req);
+        const message = chatMessage(body);
+        const jobId = body.jobId == null ? null : findJob(String(body.jobId)).id;
+        const runId = body.runId == null ? null : (store.getRun(Number(body.runId))?.id ?? null);
+        if (body.runId != null && runId === null) throw new HttpError(404, "Run not found");
+        const settings = store.getSettings();
+        const agent = body.agent === undefined ? settings.defaultAgent : body.agent;
+        if (!isAgentId(agent)) throw new HttpError(400, "Fix the highlighted fields", { agent: "Unknown agent" });
+        const line = message.split("\n")[0]!.trim();
+        const title = line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line;
+        const chat = store.createChat({ title, jobId, runId, agent, sessionId: randomUUID() });
+        return sendMessage(chat, message);
+      },
+    ],
+    ["GET", /^\/api\/chats\/(\d+)$/, async (_req, [id]) => chatView(findChat(id))],
+    [
+      "DELETE",
+      /^\/api\/chats\/(\d+)$/,
+      async (_req, [id]) => {
+        const chat = findChat(id);
+        if (chats.isBusy(chat.id)) throw new HttpError(409, "Stop the reply before deleting the chat");
+        const turnIds = store.chatTurns(chat.id).map((turn) => turn.id);
+        store.deleteChat(chat.id);
+        await chats.deleteFiles(chat.id, turnIds);
+        return { ok: true };
+      },
+    ],
+    ["POST", /^\/api\/chats\/(\d+)\/messages$/, async (req, [id]) => sendMessage(findChat(id), chatMessage(await readJson(req)))],
+    [
+      "POST",
+      /^\/api\/chats\/(\d+)\/cancel$/,
+      async (_req, [id]) => {
+        const chat = findChat(id);
+        if (!chats.cancel(chat.id)) throw new HttpError(409, "No reply is being written");
+        return chatView(chat);
+      },
+    ],
+    [
+      "GET",
+      /^\/api\/chats\/(\d+)\/turns\/(\d+)\/log$/,
+      async (_req, [id, turnId], url) => {
+        const turn = store.getTurn(Number(turnId));
+        if (!turn || turn.chatId !== findChat(id).id) throw new HttpError(404, "Turn not found");
+        const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0) || 0);
+        const { text, next, size } = await readChunk(chats.logPath(turn.id), offset);
+        return { text, offset: next, size, done: turn.status !== "running" && next >= size };
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/chats\/(\d+)\/turns\/(\d+)\/actions\/(\d+)$/,
+      async (req, [id, turnId, index]) => {
+        const chat = findChat(id);
+        const turn = store.getTurn(Number(turnId));
+        if (!turn || turn.chatId !== chat.id) throw new HttpError(404, "Turn not found");
+        const action = turn.actions[Number(index)];
+        if (!action) throw new HttpError(404, "Action not found");
+        const body = await readJson(req);
+        if (body.decision !== "apply" && body.decision !== "dismiss") throw new HttpError(400, 'Send {"decision": "apply"} or {"decision": "dismiss"}');
+        if (action.status !== "proposed") throw new HttpError(409, `This action was already ${action.status}`);
+        const outcome = body.decision === "apply" ? await applyAction(action, store, callApi) : { action: { ...action, status: "dismissed" as const } };
+        // Re-read: another action of the turn may have been decided meanwhile.
+        const actions = store.getTurn(turn.id)!.actions.map((a, i) => (i === Number(index) ? outcome.action : a));
+        store.updateTurn(turn.id, { actions });
+        store.touchChat(chat.id);
+        // A secret goes to the owner's card in this response only: it is never stored or shown to the agent.
+        return { action: outcome.action, ...("secret" in outcome && outcome.secret ? { secret: outcome.secret } : {}) };
       },
     ],
     [

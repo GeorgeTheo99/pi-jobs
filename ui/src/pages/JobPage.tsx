@@ -1,4 +1,4 @@
-import { Play, RadioTower, RefreshCw, Trash2 } from "lucide-react";
+import { MessagesSquare, Play, RadioTower, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ItemList } from "@/components/Items";
@@ -121,10 +121,16 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
         }
         actions={
           job && (
-            <button type="button" className="btn btn-ghost" onClick={() => void runNow()}>
-              <Play aria-hidden className="size-3.5" />
-              Run now
-            </button>
+            <>
+              <Link to={`/chats?jobId=${job.id}`} className="btn btn-ghost">
+                <MessagesSquare aria-hidden className="size-3.5" />
+                Chat about it
+              </Link>
+              <button type="button" className="btn btn-ghost" onClick={() => void runNow()}>
+                <Play aria-hidden className="size-3.5" />
+                Run now
+              </button>
+            </>
           )
         }
       />

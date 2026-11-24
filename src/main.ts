@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import path from "node:path";
 import { createApp } from "./app.ts";
+import { ChatRunner } from "./chat.ts";
 import { loadConfig } from "./config.ts";
 import { Runner } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -14,6 +15,8 @@ const interrupted = store.failInterruptedRuns();
 if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 for (const run of interrupted) runner.retry(run);
 runner.backfillSummaries();
+const cutOff = store.failInterruptedTurns();
+if (cutOff.length > 0) console.warn(`Marked ${cutOff.length} interrupted chat repl${cutOff.length === 1 ? "y" : "ies"} as failed`);
 
 const fireSchedule = (jobId: number, missed: boolean) => {
   const job = store.getJob(jobId);
@@ -38,7 +41,8 @@ for (const job of store.listJobs()) {
 }
 runner.pump();
 
-const handle = createApp({ config, store, runner, scheduler });
+const chats = new ChatRunner({ store, stateDir: config.stateDir, nextRun: (jobId) => scheduler.nextRun(jobId) });
+const handle = createApp({ config, store, runner, scheduler, chats });
 const server = createServer((req, res) => void handle(req, res));
 server.listen(config.port, config.host, () => {
   console.log(`pi-jobs listening on http://${config.host}:${config.port} (state: ${config.stateDir})`);
@@ -47,7 +51,7 @@ server.listen(config.port, config.host, () => {
 const shutdown = async () => {
   scheduler.stop();
   server.close();
-  await runner.shutdown();
+  await Promise.all([runner.shutdown(), chats.shutdown()]);
   store.close();
   process.exit(0);
 };

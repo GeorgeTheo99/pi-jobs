@@ -104,3 +104,10 @@ function humanize(key: string): string {
     .toLowerCase();
   return words ? words[0].toUpperCase() + words.slice(1) : key;
 }
+
+/** A setting's value on a chat action's card, exactly as it would be saved. */
+export function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "(none)";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}

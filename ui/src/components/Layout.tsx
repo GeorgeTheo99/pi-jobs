@@ -1,4 +1,4 @@
-import { CalendarClock, Inbox, Settings } from "lucide-react";
+import { CalendarClock, Inbox, MessagesSquare, Settings } from "lucide-react";
 import { useMemo } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -7,6 +7,7 @@ import { usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
 const NAV = [
   { to: "/", label: "Inbox", icon: Inbox, end: true, badge: true },
+  { to: "/chats", label: "Chat", icon: MessagesSquare, end: false, badge: false },
   { to: "/jobs", label: "Jobs", icon: CalendarClock, end: false, badge: false },
   { to: "/settings", label: "Settings", icon: Settings, end: false, badge: false },
 ];
@@ -76,7 +77,7 @@ export function Layout() {
 
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-3 border-t border-steel/40 bg-abyss/95 pb-[var(--safe-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t border-steel/40 bg-abyss/95 pb-[var(--safe-bottom)] backdrop-blur md:hidden"
       >
         {NAV.map(({ to, label, icon: Icon, end, badge }) => (
           <NavLink

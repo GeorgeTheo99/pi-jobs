@@ -32,7 +32,7 @@ const NETWORK_TIMEOUT_MS = 120_000;
 /** The wait before the first retry; each further retry waits 4x longer. */
 const RETRY_DELAY_MS = 60_000;
 /** Session-scoped variables that leak in when the server is started from inside an agent session. */
-const SESSION_ENV = [
+export const SESSION_ENV = [
   "PI_SESSION_FILE",
   "PI_SESSION_ID",
   "PI_CODING_AGENT",
@@ -156,7 +156,7 @@ function fenced(text: string): string[] {
 }
 
 /** What Pi prints on stderr the first time a named session is used. */
-const PI_NEW_SESSION = /^Warning: No project session found with id '[^']*'; creating a new session with that id\.$/;
+export const PI_NEW_SESSION = /^Warning: No project session found with id '[^']*'; creating a new session with that id\.$/;
 
 /**
  * What the agent printed: the log between pi-jobs' "Starting" note and the agent's exit, without the
@@ -1078,7 +1078,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   }
 }
 
-function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+export function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
   if (pid === undefined) return;
   try {
     process.kill(-pid, signal);
@@ -1092,7 +1092,7 @@ function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
  * `ps -E`; platform binaries hide their environment) and those whose working directory is inside
  * the run's worktree.
  */
-async function killRunProcesses(token: string, worktree: string): Promise<void> {
+export async function killRunProcesses(token: string, worktree: string): Promise<void> {
   const pids = new Set<number>();
   const marker = `PI_JOBS_RUN_TOKEN=${token}`;
   for (const line of (await commandOutput("ps", ["-AEww", "-o", "pid=,command="])).split("\n")) {
