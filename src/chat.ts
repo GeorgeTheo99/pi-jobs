@@ -1,12 +1,12 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ACTIONS, actionHelp, planAction } from "./actions.ts";
 import { buildArgv, supportsSessions, withSession } from "./agents.ts";
-import { PI_NEW_SESSION, SESSION_ENV, killRunProcesses, signalGroup } from "./runner.ts";
+import { runInGroup, signalGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
+import { PI_NEW_SESSION } from "./prompt.ts";
 import type { Chat, ChatAction, ChatTurn, Job, Run, Store } from "./store.ts";
 
 /** How long one reply may take. */
@@ -24,10 +24,8 @@ const ACTIONS_FENCE = "pi-jobs-actions";
 
 export class ChatBusyError extends Error {}
 
-interface ActiveTurn {
+interface ActiveTurn extends ProcessHandle {
   chatId: number;
-  child: ChildProcess | null;
-  killTimer: NodeJS.Timeout | null;
   stopReason: "canceled" | "timed_out" | "interrupted" | null;
 }
 
@@ -218,7 +216,7 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
   constructor(options: ChatRunnerOptions) {
     super();
     this.store = options.store;
-    this.env = Object.fromEntries(Object.entries(options.env ?? process.env).filter(([key]) => !SESSION_ENV.includes(key)));
+    this.env = withoutSessionEnv(options.env ?? process.env);
     this.killGraceMs = options.killGraceMs ?? 10_000;
     this.turnTimeoutMs = options.turnTimeoutMs ?? TURN_TIMEOUT_MS;
     this.nextRun = options.nextRun;
@@ -280,11 +278,7 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
   private stop(turn: ActiveTurn, reason: NonNullable<ActiveTurn["stopReason"]>): void {
     if (turn.stopReason) return;
     turn.stopReason = reason;
-    const pid = turn.child?.pid;
-    if (pid === undefined) return;
-    signalGroup(pid, "SIGTERM");
-    turn.killTimer = setTimeout(() => signalGroup(pid, "SIGKILL"), this.killGraceMs);
-    turn.killTimer.unref();
+    if (turn.child?.pid !== undefined) terminate(turn, this.killGraceMs);
   }
 
   private async execute(chat: Chat, turn: ChatTurn, active: ActiveTurn): Promise<void> {
@@ -330,54 +324,33 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
   }
 
   /** Runs the agent in its own process group; its output goes to the turn's log, and stdout is the reply. */
-  private spawnAgent(turnId: number, active: ActiveTurn, argv: string[], cwd: string): Promise<{ exitCode: number | null; stdout: string }> {
+  private async spawnAgent(turnId: number, active: ActiveTurn, argv: string[], cwd: string): Promise<{ exitCode: number | null; stdout: string }> {
     const log = this.logPath(turnId);
     const token = randomUUID();
-    let child: ChildProcess;
-    try {
-      child = spawn(argv[0]!, argv.slice(1), {
-        cwd,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...this.env,
-          // Marks the agent as running inside pi-jobs, so Pi's jobs_* tools stay unregistered: it proposes, never acts.
-          PI_JOBS_RUN_ID: `chat-turn-${turnId}`,
-          PI_JOBS_CHAT_ID: String(active.chatId),
-          PI_JOBS_RUN_TOKEN: token,
-        },
-      });
-    } catch (error) {
-      return Promise.reject(new Error(`Could not start ${argv[0]}: ${(error as Error).message}`));
-    }
-    active.child = child;
-    // Stopped before the agent started: end it at once.
-    if (active.stopReason && child.pid !== undefined) signalGroup(child.pid, "SIGKILL");
-    const realCwd = realpathSync(cwd);
     let stdout = "";
-    child.stdout!.on("data", (chunk: Buffer) => {
-      if (stdout.length < MAX_REPLY) stdout += chunk.toString("utf8");
-      appendFileSync(log, chunk);
+    const env = {
+      ...this.env,
+      // Marks the agent as running inside pi-jobs, so Pi's jobs_* tools stay unregistered: it proposes, never acts.
+      PI_JOBS_RUN_ID: `chat-turn-${turnId}`,
+      PI_JOBS_CHAT_ID: String(active.chatId),
+      PI_JOBS_RUN_TOKEN: token,
+    };
+    const exitCode = await runInGroup(active, {
+      argv,
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      token,
+      onSpawn: (child) => {
+        // Stopped before the agent started: end it at once.
+        if (active.stopReason) signalGroup(child.pid, "SIGKILL");
+        child.stdout!.on("data", (chunk: Buffer) => {
+          if (stdout.length < MAX_REPLY) stdout += chunk.toString("utf8");
+          appendFileSync(log, chunk);
+        });
+        child.stderr!.on("data", (chunk: Buffer) => appendFileSync(log, chunk));
+      },
     });
-    child.stderr!.on("data", (chunk: Buffer) => appendFileSync(log, chunk));
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const settle = (done: () => void) => {
-        if (settled) return;
-        settled = true;
-        active.child = null;
-        if (active.killTimer) clearTimeout(active.killTimer);
-        done();
-      };
-      child.on("error", (error) => {
-        if (child.pid === undefined) settle(() => reject(new Error(`Could not start ${argv[0]}: ${error.message}`)));
-      });
-      child.once("close", (code) =>
-        settle(() => {
-          signalGroup(child.pid, "SIGKILL");
-          void killRunProcesses(token, realCwd).finally(() => resolve({ exitCode: code, stdout }));
-        }),
-      );
-    });
+    return { exitCode, stdout };
   }
 }

@@ -420,7 +420,7 @@ test("a missed scheduled fire runs only when the job catches up", (t) => {
 });
 
 test("parseWatchOutput reads one JSON object a line, keyed by id", async () => {
-  const { parseWatchOutput } = await import("../src/runner.ts");
+  const { parseWatchOutput } = await import("../src/watch.ts");
   const ok = parseWatchOutput('{"id":"a","x":1}\n\n{"id":2}\n{"id":"a"}\n');
   assert.equal(ok.error, null);
   assert.deepEqual(ok.items.map((item) => item.id), ["a", "2"]);
@@ -533,7 +533,7 @@ test("a scheduled fire of a watch job checks the watch instead of starting a run
 });
 
 test("payloads from webhooks and watches are marked as outside data in the prompt", async () => {
-  const { buildPrompt } = await import("../src/runner.ts");
+  const { buildPrompt } = await import("../src/prompt.ts");
   const ctx = setup();
   try {
     const job = ctx.store.createJob(ctx.jobInput(), null);
@@ -626,7 +626,7 @@ test("a follow-up to a run without changes starts from the job's base; retries k
 });
 
 test("agentOutput keeps only what the agent printed; fences can't be closed by their content", async () => {
-  const { agentOutput, buildPrompt } = await import("../src/runner.ts");
+  const { agentOutput, buildPrompt } = await import("../src/prompt.ts");
   const log = [
     "[pi-jobs 2026-01-01T00:00:00Z] Queued",
     "[pi-jobs 2026-01-01T00:00:01Z] Starting pi: pi -p {prompt}",
@@ -680,7 +680,7 @@ test("changes lists a run's files and patch; mergedRuns sees commits that reache
   ctx.useFakeAgent("edit");
   const run = await waitForFinish(ctx.runner, ctx.runner.followUp(earlier, "More").id);
 
-  const own = await ctx.runner.changes(job, run);
+  const own = await ctx.runner.repos.changes(job, run);
   assert.ok(own);
   assert.deepEqual(
     own.files.map((f) => [f.path, f.status]),
@@ -689,17 +689,17 @@ test("changes lists a run's files and patch; mergedRuns sees commits that reache
   assert.ok((own.files[0]!.additions ?? 0) > 0);
   assert.match(own.patch, /^diff --git a\/agent-output.txt/);
   assert.equal(own.truncated, false);
-  const all = await ctx.runner.changes(job, run, true);
+  const all = await ctx.runner.repos.changes(job, run, true);
   assert.deepEqual(all!.files.map((f) => f.path).sort(), ["agent-output.txt", "committed.txt"]);
 
-  assert.equal((await ctx.runner.mergedRuns([earlier, run])).size, 0);
+  assert.equal((await ctx.runner.repos.mergedRuns([earlier, run])).size, 0);
   git(ctx.repo, "merge", "-q", "--ff-only", earlier.branch!);
-  const merged = await new Promise<Set<number>>((resolve) => setTimeout(() => resolve(ctx.runner.mergedRuns([earlier, run])), 5_100));
+  const merged = await new Promise<Set<number>>((resolve) => setTimeout(() => resolve(ctx.runner.repos.mergedRuns([earlier, run])), 5_100));
   assert.deepEqual([...merged], [earlier.id]);
 });
 
 test("parseChangedFiles pairs statuses with counts, including renames and binaries", async () => {
-  const { parseChangedFiles } = await import("../src/runner.ts");
+  const { parseChangedFiles } = await import("../src/git.ts");
   const names = ["M", "a.txt", "R100", "old name.txt", "new name.txt", "A", "img.png", ""].join("\0");
   const counts = ["3\t1\ta.txt", "0\t0\t", "old name.txt", "new name.txt", "-\t-\timg.png", ""].join("\0");
   assert.deepEqual(parseChangedFiles(names, counts), [
@@ -795,7 +795,7 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
 });
 
 test("question prompts forbid changes; Pi's new-session note stays out of the report", async () => {
-  const { agentOutput, buildPrompt } = await import("../src/runner.ts");
+  const { agentOutput, buildPrompt } = await import("../src/prompt.ts");
   assert.equal(
     agentOutput("[pi-jobs x] Starting pi: pi\nWarning: No project session found with id 'ab'; creating a new session with that id.\nAnswer\n[pi-jobs x] Agent exited with code 0"),
     "Answer",
@@ -946,11 +946,12 @@ test("a release run has the agent ship the item: it may push, is never retried, 
 
   // Two releases of one item can't be queued at once.
   ctx.useFakeAgent("not-released");
-  const [first, second] = await Promise.allSettled([ctx.runner.ship(changed), ctx.runner.ship(changed)]);
-  assert.equal(first.status, "fulfilled");
-  assert.equal(second.status, "rejected");
+  const both = await Promise.allSettled([ctx.runner.ship(changed), ctx.runner.ship(changed)]);
+  const queued1 = both.filter((r): r is PromiseFulfilledResult<Run> => r.status === "fulfilled");
+  assert.equal(queued1.length, 1, "exactly one is queued");
+  assert.match(String((both.find((r) => r.status === "rejected") as PromiseRejectedResult).reason), /Wait for the item's runs to finish/);
   // An agent that exits 0 but reports "Not released" didn't release.
-  const stopped = await waitForFinish(ctx.runner, (first as PromiseFulfilledResult<Run>).value.id);
+  const stopped = await waitForFinish(ctx.runner, queued1[0]!.value.id);
   assert.equal(stopped.mode, "release");
   assert.equal(stopped.status, "failed");
   assert.equal(stopped.error, "The agent reported that it did not release");
@@ -983,7 +984,7 @@ test("a release run has the agent ship the item: it may push, is never retried, 
   assert.match(seen.prompt, /Never force-push/);
   assert.equal(seen.commit, released.baseCommit);
   assert.ok(seen.branch.startsWith("pi-jobs/"));
-  assert.ok((await ctx.runner.mergedRuns([changed])).has(changed.id), "the item counts as merged once main has it");
+  assert.ok((await ctx.runner.repos.mergedRuns([changed])).has(changed.id), "the item counts as merged once main has it");
 
   // With autoRelease, a run that succeeds with changes releases at once; one without changes doesn't.
   ctx.store.updateJob(job.id, ctx.jobInput({ releaseInstructions, autoRelease: true }), null);
@@ -1026,7 +1027,7 @@ test("a run whose agent was removed from Settings fails without retries", async 
 });
 
 test("releaseOutcome reads the report's Released line", async () => {
-  const { releaseOutcome } = await import("../src/runner.ts");
+  const { releaseOutcome } = await import("../src/prompt.ts");
   assert.equal(releaseOutcome("**Released**\nversion 2"), null);
   assert.equal(releaseOutcome("preamble\n# Released 0.8.0"), null);
   assert.match(releaseOutcome("Not released: tests failed") ?? "", /did not release/);

@@ -416,11 +416,11 @@ test("follow-ups need a finished run and instructions", async (t) => {
 });
 
 test("run views carry a summary headline and merge state; changes are served per run", async (t) => {
-  const { summaryHeadline } = await import("../src/app.ts");
+  const { summaryHeadline } = await import("../src/report.ts");
   assert.equal(summaryHeadline("\n**HS-1: feature idea, needs the owner's decision.**\n- more"), "HS-1: feature idea, needs the owner's decision.");
   assert.equal(summaryHeadline("## Done\nx"), "Done");
   assert.equal(summaryHeadline(""), null);
-  const { summaryVerdict } = await import("../src/app.ts");
+  const { summaryVerdict } = await import("../src/report.ts");
   assert.equal(summaryVerdict("**HS-1**\n- **Verdict:** can't reproduce\n- x"), "- **Verdict:** can't reproduce");
   assert.equal(summaryVerdict("no verdict here"), null);
 
