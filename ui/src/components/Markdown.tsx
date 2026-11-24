@@ -2,8 +2,8 @@ import { Fragment, type ReactNode } from "react";
 
 /**
  * Renders the small Markdown subset agents write in reports: headings, paragraphs, bullet and
- * numbered lists (one level of nesting), quotes, fenced code, rules, and inline bold, italics, code
- * and http(s) links. It builds React elements, never HTML, so report text can't inject markup.
+ * numbered lists (one level of nesting), quotes, fenced code, rules, tables, and inline bold,
+ * italics, code and http(s) links. It builds React elements, never HTML, so report text can't inject markup.
  */
 export function Markdown({ text, className = "" }: { text: string; className?: string }) {
   return <div className={`prose-report ${className}`}>{blocks(text.replace(/\r\n?/g, "\n"))}</div>;
@@ -41,6 +41,35 @@ function blocks(text: string): ReactNode[] {
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
       out.push(<hr key={key()} />);
       i++;
+      continue;
+    }
+    if (isTableRow(line) && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1]!)) {
+      const head = cells(line);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && isTableRow(lines[i]!)) rows.push(cells(lines[i++]!));
+      out.push(
+        <div key={key()} className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                {head.map((cell, n) => (
+                  <th key={n}>{inline(cell)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, r) => (
+                <tr key={r}>
+                  {head.map((_, n) => (
+                    <td key={n}>{inline(row[n] ?? "")}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
       continue;
     }
     if (/^\s*>/.test(line)) {
@@ -84,6 +113,7 @@ function blocks(text: string): ReactNode[] {
       i < lines.length &&
       lines[i]!.trim() &&
       !listMarker(lines[i]!) &&
+      !(isTableRow(lines[i]!) && TABLE_RULE.test(lines[i + 1] ?? "")) &&
       !/^\s*(#{1,6}\s|>|`{3,}|~{3,})/.test(lines[i]!)
     ) {
       paragraph.push(lines[i++]!.trim());
@@ -100,6 +130,18 @@ function blocks(text: string): ReactNode[] {
     );
   }
   return out;
+}
+
+const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+const isTableRow = (line: string) => /^\s*\|.*\|\s*$/.test(line);
+
+/** A table row's cells, without the outer pipes; "\|" stays a literal pipe. */
+function cells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\||\|$/g, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.replaceAll("\\|", "|").trim());
 }
 
 function listMarker(line: string): { indent: number; ordered: boolean; text: string } | null {

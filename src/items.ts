@@ -56,7 +56,8 @@ export function itemView<R extends Omit<RunView, "summary">>(runs: R[], job: Job
   // Questions answer; they don't change what the item came to, so its verdict and state skip them.
   const work = runs.filter((run) => run.mode !== "ask");
   const latestWork = work.at(-1) ?? latest;
-  const finished = [...work].reverse().find((run) => !isOpen(run)) ?? null;
+  // The verdict is what the work concluded; a release's report says how the release went.
+  const finished = [...work].reverse().find((run) => !isOpen(run) && !RELEASE_MODES.includes(run.mode)) ?? null;
   const withChanges = [...runs].reverse().find((run) => (run.commits ?? 0) > 0) ?? null;
   const verdict = finished?.verdict ?? "unknown";
   const releasable = Boolean(job?.releaseInstructions || job?.shipCommand);
@@ -69,8 +70,12 @@ export function itemView<R extends Omit<RunView, "summary">>(runs: R[], job: Job
     latestWorkId: latestWork.id,
     withChangesId: withChanges?.id ?? null,
     replied: runs.some((run) => run.repliedAt !== null),
+    // Work that succeeded, or a release that failed (to try again); a release that went out is done until new work.
     canRelease:
-      releasable && !runs.some(isOpen) && withChanges !== null && (latestWork.status === "succeeded" || RELEASE_MODES.includes(latestWork.mode)),
+      releasable &&
+      !runs.some(isOpen) &&
+      withChanges !== null &&
+      (RELEASE_MODES.includes(latestWork.mode) ? latestWork.status !== "succeeded" : latestWork.status === "succeeded"),
   };
 }
 

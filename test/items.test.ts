@@ -88,7 +88,7 @@ test("releases: released once one succeeds; releasable with instructions or a sc
   const broken = itemView([work, failedRelease], releasing);
   assert.deepEqual([broken.state, broken.canRelease], ["failed", true], "a failed release can be released again");
   const released = itemView([work, failedRelease, run({ id: 3, followUpOf: 2, mode: "release" })], releasing);
-  assert.deepEqual([released.state, released.withChangesId], ["released", 1]);
+  assert.deepEqual([released.state, released.withChangesId, released.canRelease], ["released", 1, false], "done until new work");
   assert.equal(itemView([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })], script).canRelease, false);
 });
 

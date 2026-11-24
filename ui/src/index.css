@@ -328,6 +328,24 @@
     font-size: 0.85em;
     overflow-wrap: anywhere;
   }
+  .prose-report .table-scroll {
+    overflow-x: auto;
+  }
+  .prose-report table {
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .prose-report th,
+  .prose-report td {
+    padding: 4px 10px;
+    border: 1px solid rgb(65 90 119 / 0.45);
+    text-align: left;
+    vertical-align: top;
+  }
+  .prose-report th {
+    font-weight: 700;
+    background: rgb(27 38 59 / 0.6);
+  }
   .prose-report pre {
     overflow-x: auto;
     padding: 10px 12px;

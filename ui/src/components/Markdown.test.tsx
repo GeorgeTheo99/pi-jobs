@@ -31,3 +31,11 @@ test("renders an agent report's Markdown as elements, never as HTML", () => {
   expect(container.querySelectorAll("ol > li")).toHaveLength(2);
   expect(container.querySelector("pre")?.textContent).toBe("npm test");
 });
+
+test("tables render as tables, with inline formatting in cells", () => {
+  const { container } = render(<Markdown text={"| Commit | Message |\n|---|---|\n| `5280695` | Fix **typo** |\n| `ee17d6f` | Release 2 |"} />);
+  expect(container.querySelectorAll("th")).toHaveLength(2);
+  expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
+  expect(container.querySelector("td code")?.textContent).toBe("5280695");
+  expect(container.querySelector("td strong")?.textContent).toBe("typo");
+});
