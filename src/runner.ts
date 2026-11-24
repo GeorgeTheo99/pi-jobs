@@ -60,7 +60,16 @@ export function slugify(name: string): string {
   );
 }
 
-export class Runner extends EventEmitter<{ finished: [Run] }> {
+export interface RunnerEvents {
+  /** A run finished; `retrying` when a retry of it is queued. */
+  finished: [run: Run, info: { retrying: boolean }];
+  /** A run from the schedule, webhook or watch waits for the owner's approval. */
+  awaiting: [run: Run];
+  /** A job's watch command started failing (it had worked, or not run, before). */
+  watchFailed: [job: Job, error: string];
+}
+
+export class Runner extends EventEmitter<RunnerEvents> {
   private readonly store: Store;
   private readonly env: NodeJS.ProcessEnv;
   private readonly killGraceMs: number;
@@ -106,6 +115,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     const approval = job.approveRuns && trigger !== "manual";
     const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued");
     this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, agent: ${agent})`);
+    if (approval) this.emit("awaiting", run);
     if (pump) this.pump();
     return { run: this.store.getRun(run.id)! };
   }
@@ -285,7 +295,9 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
     }
+    const before = this.store.getJob(job.id)?.watchError ?? null;
     this.store.setWatchResult(job.id, result.error);
+    if (result.error && !before) this.emit("watchFailed", job, result.error);
     return result;
   }
 
@@ -535,6 +547,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
         retryable,
       );
       if (finished.status === "succeeded" && finished.mode === "change" && (finished.commits ?? 0) > 0) await this.autoRelease(job, finished);
+      if (finished.status === "succeeded" && release) await this.pruneItemBranches(job, finished);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.note(run.id, `Error: ${message}`);
@@ -637,6 +650,23 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
         error: `${INTERRUPTED}, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`,
       });
     }
+  }
+
+  /**
+   * After a release, deletes the item's run branches whose commits are all on the base branch: they
+   * are released, so keeping them only clutters the repository. Runs keep the names for the record.
+   */
+  private async pruneItemBranches(job: Job, release: Run): Promise<void> {
+    const target = (await isFetchableBranch(job.repoPath, job.baseRef)) ? `refs/remotes/${REMOTE}/${baseBranch(job.baseRef)}` : job.baseRef;
+    const pruned: string[] = [];
+    for (const run of this.store.itemRuns(release.itemId)) {
+      if (!run.branch || run.worktree || run.id === release.id) continue;
+      const tip = await git(job.repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${run.branch}`]).catch(() => null);
+      if (!tip) continue;
+      const released = await git(job.repoPath, ["merge-base", "--is-ancestor", tip, target]).then(() => true, () => false);
+      if (released && (await git(job.repoPath, ["branch", "-D", run.branch]).then(() => true, () => false))) pruned.push(run.branch);
+    }
+    if (pruned.length > 0) this.note(release.id, `Deleted released branches: ${pruned.join(", ")}`);
   }
 
   /** Runs the job's verify command after a release, in its checkout; why it failed, or null. */
@@ -827,8 +857,8 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
   private finish(runId: number, patch: Parameters<Store["updateRun"]>[1], retryable = false): Run {
     const run = this.store.updateRun(runId, { ...patch, summary: this.readSummary(runId), finishedAt: new Date().toISOString() });
     this.note(runId, `Finished: ${run.status}`);
-    if (retryable) this.retry(run);
-    this.emit("finished", run);
+    const retry = retryable ? this.retry(run) : null;
+    this.emit("finished", run, { retrying: retry !== null });
     return run;
   }
 

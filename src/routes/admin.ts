@@ -62,6 +62,15 @@ export function adminRoutes(ctx: AppContext): Route[] {
         return { path: result.path };
       },
     ],
+    [
+      "POST",
+      /^\/api\/settings\/notify-test$/,
+      async () => {
+        if (!ctx.store.getSettings().notifyCommand) throw new HttpError(409, "Save a notify command first");
+        const error = await ctx.notifier?.send({ event: "test", title: "pi-jobs test notification", message: "Notifications from pi-jobs reach you.", path: "/" });
+        return { ok: !error, error: error ?? null };
+      },
+    ],
     ["GET", /^\/api\/settings$/, async () => settingsView(store.getSettings())],
     [
       "PUT",

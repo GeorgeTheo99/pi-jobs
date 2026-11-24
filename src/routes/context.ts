@@ -3,6 +3,7 @@ import { AGENT_PRESETS, agentLabel, buildArgv, commandProgram, isBuiltinAgent, r
 import type { CallApi } from "../actions.ts";
 import type { ChatRunner } from "../chat.ts";
 import type { Config } from "../config.ts";
+import type { Notifier } from "../notify.ts";
 import { HttpError } from "../http.ts";
 import type { Runner } from "../runner.ts";
 import type { Scheduler } from "../scheduler.ts";
@@ -19,6 +20,7 @@ export interface AppContext {
   runner: Runner;
   scheduler: Scheduler;
   chats: ChatRunner;
+  notifier?: Notifier;
   /** The token each request signed in with. */
   sessions: WeakMap<IncomingMessage, ApiToken>;
   /** Checkouts under the repo roots, rescanned at most every 30 s. */
@@ -31,7 +33,7 @@ export interface AppContext {
   callApi: CallApi;
 }
 
-export function createContext(base: Pick<AppContext, "config" | "store" | "runner" | "scheduler" | "chats">, envPath: string): AppContext {
+export function createContext(base: Pick<AppContext, "config" | "store" | "runner" | "scheduler" | "chats" | "notifier">, envPath: string): AppContext {
   const { config, store, scheduler } = base;
   let checkoutCache: { at: number; checkouts: Promise<Checkout[]> } | null = null;
   return {

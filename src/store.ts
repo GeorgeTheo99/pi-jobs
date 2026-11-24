@@ -185,12 +185,18 @@ export interface Settings {
   /** The built-in agents (pi, claude, codex) first, then any added in Settings, by id. */
   agents: Record<AgentId, { command: string }>;
   maxConcurrent: number;
+  /** Shell command run on events that need the owner (PI_JOBS_EVENT, _TITLE, _MESSAGE, _URL in its environment); null for none. */
+  notifyCommand: string | null;
+  /** Where the owner opens the UI (behind a proxy, say), for links in notifications; null to use the local address. */
+  publicUrl: string | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   defaultAgent: "pi",
   agents: Object.fromEntries(BUILTIN_AGENT_IDS.map((id) => [id, { command: AGENT_PRESETS[id].command }])),
   maxConcurrent: 2,
+  notifyCommand: null,
+  publicUrl: null,
 };
 
 const SCHEMA = `
@@ -914,6 +920,8 @@ export class Store {
       defaultAgent: typeof saved.defaultAgent === "string" && Object.hasOwn(agents, saved.defaultAgent) ? saved.defaultAgent : DEFAULT_SETTINGS.defaultAgent,
       agents,
       maxConcurrent: saved.maxConcurrent ?? DEFAULT_SETTINGS.maxConcurrent,
+      notifyCommand: saved.notifyCommand ?? null,
+      publicUrl: saved.publicUrl ?? null,
     };
   }
 

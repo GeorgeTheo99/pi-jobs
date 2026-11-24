@@ -1,4 +1,22 @@
-/** What an agent's report says, read from its text. */
+/** What an agent's report says, read from its text, and what a webhook or watch payload is about. */
+
+/** A payload's title, description or first text field, for a one-line summary; null when it has none. */
+export function summarizePayload(payload: string | null): string | null {
+  if (!payload) return null;
+  try {
+    const value: unknown = JSON.parse(payload);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      for (const key of ["title", "summary", "subject", "description", "message", "details", "body"]) {
+        const field = record[key];
+        if (typeof field === "string" && field.trim()) return field.trim().split("\n")[0]!.slice(0, 120);
+      }
+    }
+  } catch {
+    // Not JSON: its first line.
+  }
+  return payload.trim().split("\n")[0]!.slice(0, 120) || null;
+}
 
 /** A report's "Verdict: …" line, which the triage prompt asks for, so lists can show the verdict without the report. */
 export function summaryVerdict(summary: string | null): string | null {

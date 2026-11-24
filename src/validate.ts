@@ -135,7 +135,14 @@ export function validateSettings(body: Record<string, unknown>, current: Setting
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 8) {
     fields.maxConcurrent = "Use a whole number from 1 to 8";
   }
+  // Clients from before notifications leave these out and keep them.
+  const optional = (key: "notifyCommand" | "publicUrl") =>
+    body[key] === undefined ? current[key] : typeof body[key] === "string" ? (body[key] as string).trim() || null : null;
+  const notifyCommand = optional("notifyCommand");
+  if (notifyCommand && notifyCommand.length > 4000) fields.notifyCommand = "Keep the notify command under 4,000 characters";
+  const publicUrl = optional("publicUrl")?.replace(/\/+$/, "") ?? null;
+  if (publicUrl && !/^https?:\/\/[^\s]+$/.test(publicUrl)) fields.publicUrl = "Use an http:// or https:// address";
   if (Object.keys(fields).length > 0) throw new HttpError(400, "Fix the highlighted fields", fields);
-  return { defaultAgent: body.defaultAgent as string, agents, maxConcurrent };
+  return { defaultAgent: body.defaultAgent as string, agents, maxConcurrent, notifyCommand, publicUrl };
 }
 

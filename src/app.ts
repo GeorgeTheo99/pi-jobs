@@ -5,6 +5,7 @@ import { Readable } from "node:stream";
 import type { CallApi } from "./actions.ts";
 import { ChatBusyError, type ChatRunner } from "./chat.ts";
 import type { Config } from "./config.ts";
+import type { Notifier } from "./notify.ts";
 import { HttpError, bearerToken, proxyPrefix, sendJson } from "./http.ts";
 import { JobPausedError, QueueFullError, ReleaseRefusedError, type Runner } from "./runner.ts";
 import type { Scheduler } from "./scheduler.ts";
@@ -23,6 +24,8 @@ export interface AppDeps {
   runner: Runner;
   scheduler: Scheduler;
   chats: ChatRunner;
+  /** Sends Settings' notifications (a test one from Settings). */
+  notifier?: Notifier;
   env?: NodeJS.ProcessEnv;
 }
 

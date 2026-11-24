@@ -157,12 +157,14 @@ const settingsBody = (settings: Settings) => ({
   defaultAgent: settings.defaultAgent,
   agents: settings.agents,
   maxConcurrent: settings.maxConcurrent,
+  notifyCommand: settings.notifyCommand,
+  publicUrl: settings.publicUrl,
 });
 
 function settingsChanges(args: Record<string, unknown>, settings: Settings) {
   const value = args.changes;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ActionError("changes must be an object");
-  const { defaultAgent, maxConcurrent, agents, ...rest } = value as Record<string, unknown>;
+  const { defaultAgent, maxConcurrent, agents, notifyCommand, publicUrl, ...rest } = value as Record<string, unknown>;
   if (Object.keys(rest).length > 0) throw new ActionError(`Unknown setting: ${Object.keys(rest).join(", ")}`);
   const next = structuredClone(settingsBody(settings)) as ReturnType<typeof settingsBody>;
   const changes: ChatAction["changes"] = [];
@@ -174,6 +176,12 @@ function settingsChanges(args: Record<string, unknown>, settings: Settings) {
   if (maxConcurrent !== undefined) {
     if (maxConcurrent !== settings.maxConcurrent) changes.push({ field: "maxConcurrent", before: settings.maxConcurrent, after: maxConcurrent });
     next.maxConcurrent = maxConcurrent as number;
+  }
+  for (const [field, after] of [["notifyCommand", notifyCommand], ["publicUrl", publicUrl]] as const) {
+    if (after === undefined) continue;
+    if (after !== null && typeof after !== "string") throw new ActionError(`${field} must be a string or null`);
+    if ((after || null) !== settings[field]) changes.push({ field, before: settings[field], after: after || null });
+    next[field] = (after as string | null) || null;
   }
   if (agents !== undefined) {
     if (!agents || typeof agents !== "object" || Array.isArray(agents)) throw new ActionError("agents must map agent ids to {command} (or null to remove one)");
@@ -370,14 +378,14 @@ const DEFINITIONS: Record<string, Definition> = {
     outcome: (_response, args) => ({ text: boolArg(args, "replied", true) ? "Marked replied" : "Marked not replied" }),
   },
   update_settings: {
-    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "agents"?: {"<agent id>": {"command"} | null}}}: change Settings. Agents are pi, claude, codex and any added by name (another Pi launcher such as "pi-claude"); a new name adds one, null removes an added one.`,
+    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "notifyCommand"?, "publicUrl"?, "agents"?: {"<agent id>": {"command"} | null}}}: change Settings. Agents are pi, claude, codex and any added by name (another Pi launcher such as "pi-claude"); a new name adds one, null removes an added one.`,
     plan(args, store) {
       const settings = store.getSettings();
       const { changes } = settingsChanges(args, settings);
       return {
         title: `Change settings: ${changes.map((c) => c.field).join(", ")}`,
         changes,
-        risky: changes.some((c) => c.field.startsWith("agents.")),
+        risky: changes.some((c) => c.field.startsWith("agents.") || c.field === "notifyCommand"),
         basis: JSON.stringify(settingsBody(settings)),
       };
     },
