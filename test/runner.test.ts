@@ -786,7 +786,7 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   assert.equal(readFileSync(sessions, "utf8").trim().split("\n").length, 4, "the ship itself started no agent");
   const afterPrompt = git(ctx.repo, "show", `${after.branch}:agent-output.txt`);
   assert.match(afterPrompt, /continues your earlier conversation/);
-  assert.match(afterPrompt, /ship command printed \(the end\):\n```\nshipped-ok\n```/);
+  assert.match(afterPrompt, /release script printed \(the end\):\n```\nshipped-ok\n```/);
 
   const other = ctx.runner.trigger(job, "manual");
   assert.ok("run" in other);
@@ -892,7 +892,7 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.equal(queued.itemId, changed.itemId);
   const failed = await waitForFinish(ctx.runner, queued.id);
   assert.equal(failed.status, "failed");
-  assert.equal(failed.error, "The ship command exited with code 3");
+  assert.equal(failed.error, "The release script exited with code 3");
   assert.equal(failed.worktree, null, "its checkout is discarded");
   assert.equal(failed.commits, 0);
   assert.match(failed.summary ?? "", /release step done\nacceptance failed: upgrade broke/);
@@ -908,8 +908,8 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.equal(fix.baseCommit, changed.headCommit, "it builds on the shipped result");
   const prompt = git(ctx.repo, "show", `${fix.branch}:agent-output.txt`);
   assert.match(prompt, /^Fix what broke the release/);
-  assert.match(prompt, new RegExp(`Run #${failed.id} shipped this item: .* failed \\(The ship command exited with code 3\\)`));
-  assert.match(prompt, /ship command printed \(the end\):\n```\nrelease step done\nacceptance failed: upgrade broke\n```/);
+  assert.match(prompt, new RegExp(`Run #${failed.id} released this item with the job's release script, and it failed \\(The release script exited with code 3\\)`));
+  assert.match(prompt, /release script printed \(the end\):\n```\nrelease step done\nacceptance failed: upgrade broke\n```/);
   assert.match(prompt, /The job's instructions:\n```\nDo the thing/, "the ship command isn't passed off as instructions");
 
   writeFileSync(ok, "");
@@ -926,7 +926,7 @@ test("ship runs the job's ship command on the item's result; it is never retried
   await assert.rejects(ctx.runner.release(canceled), /Only a succeeded result can be released/);
 });
 
-test("a release run has the agent ship the item: it may push, is never retried, and autoRelease starts it by itself", async (t) => {
+test("a release run has the agent release the item: checked against git and the verify command, never retried; autoRelease only for checked, implemented work", async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);
   const remote = path.join(ctx.root, "remote.git");
@@ -934,15 +934,17 @@ test("a release run has the agent ship the item: it may push, is never retried, 
   git(ctx.repo, "remote", "add", "origin", remote);
   git(ctx.repo, "push", "-q", "origin", "main");
   const record = path.join(ctx.root, "release.json");
+  const verified = path.join(ctx.root, "verified");
   const releaseInstructions = "Release it: push main, then check the version.";
-  const job = ctx.store.createJob(ctx.jobInput({ releaseInstructions, retries: 2 }), null);
+  const input = (overrides = {}) => ctx.jobInput({ releaseInstructions, verifyCommand: `test -f ${verified}`, retries: 2, ...overrides });
+  const job = ctx.store.createJob(input(), null);
 
   ctx.useFakeAgent("commit");
   const started = ctx.runner.trigger(job, "manual");
   assert.ok("run" in started);
   const changed = await waitForFinish(ctx.runner, started.run.id);
   assert.equal(changed.commits, 1);
-  assert.equal(ctx.store.itemRuns(changed.itemId).length, 1, "without autoRelease nothing ships by itself");
+  assert.equal(ctx.store.itemRuns(changed.itemId).length, 1, "without autoRelease nothing releases by itself");
 
   // Two releases of one item can't be queued at once.
   ctx.useFakeAgent("not-released");
@@ -956,24 +958,36 @@ test("a release run has the agent ship the item: it may push, is never retried, 
   assert.equal(stopped.status, "failed");
   assert.equal(stopped.error, "The agent reported that it did not release");
 
+  // Nor did one that exits 0 without pushing: git decides, not the agent's word.
+  ctx.useFakeAgent("noop");
+  const unpushed = await waitForFinish(ctx.runner, (await ctx.runner.release(stopped)).id);
+  assert.equal(unpushed.status, "failed");
+  assert.equal(unpushed.error, "The item's result isn't on origin/main, so it wasn't released");
+
   // A failed release isn't retried: it may have done part of something irreversible.
   ctx.useFakeAgent("fail");
-  const failed = await waitForFinish(ctx.runner, (await ctx.runner.release(stopped)).id);
+  const failed = await waitForFinish(ctx.runner, (await ctx.runner.release(unpushed)).id);
   assert.equal(failed.mode, "release");
   assert.equal(failed.status, "failed");
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(ctx.store.itemRuns(changed.itemId).length, 3, "a failed release is not retried");
+  assert.equal(ctx.store.itemRuns(changed.itemId).length, 4, "a failed release is not retried");
   assert.equal(failed.commits, 1, "what it left unreleased (its partial work) stays on its branch");
 
-  // The owner releases again.
+  // Pushed, but the verify command fails: not released.
   ctx.useFakeAgent(`release:${record}`);
-  const queued = await ctx.runner.release(failed);
+  const unverified = await waitForFinish(ctx.runner, (await ctx.runner.release(failed)).id);
+  assert.equal(unverified.status, "failed");
+  assert.equal(unverified.error, "The verify command failed with code 1");
+  assert.match(readFileSync(ctx.runner.logPath(unverified.id), "utf8"), /The item's result is on origin\/main/);
+
+  // The owner fixes what the check needed and releases again.
+  writeFileSync(verified, "");
+  const queued = await ctx.runner.release(unverified);
   assert.equal(queued.mode, "release");
   assert.equal(queued.instructions, releaseInstructions);
   assert.equal(queued.agent, "pi");
   const released = await waitForFinish(ctx.runner, queued.id);
-  assert.equal(released.status, "succeeded", released.error ?? "");
-  assert.equal(released.baseCommit, failed.headCommit, "it builds on the newest commits, the failed attempt's leftovers included");
+  assert.equal(released.status, "succeeded", `${released.error} ${readFileSync(ctx.runner.logPath(released.id), "utf8")}`);
   assert.equal(git(remote, "rev-parse", "main"), released.headCommit, "the agent pushed main");
   assert.equal(released.commits, 0, "nothing is left unreleased");
   assert.equal(released.branch, null);
@@ -981,36 +995,39 @@ test("a release run has the agent ship the item: it may push, is never retried, 
   const seen = JSON.parse(readFileSync(record, "utf8")) as { prompt: string; commit: string; branch: string };
   assert.ok(seen.prompt.startsWith(releaseInstructions));
   assert.match(seen.prompt, /This run is the release\. Unlike the item's earlier runs, you may merge, push, deploy and publish/);
-  assert.match(seen.prompt, /Never force-push/);
+  assert.match(seen.prompt, /Never force-push main/);
   assert.equal(seen.commit, released.baseCommit);
-  assert.ok(seen.branch.startsWith("pi-jobs/"));
   assert.ok((await ctx.runner.repos.mergedRuns([changed])).has(changed.id), "the item counts as merged once main has it");
 
-  // With autoRelease, a run that succeeds with changes releases at once; one without changes doesn't.
-  ctx.store.updateJob(job.id, ctx.jobInput({ releaseInstructions, autoRelease: true }), null);
-  ctx.useFakeAgent("noop");
-  const quiet = ctx.runner.trigger(job, "manual");
-  assert.ok("run" in quiet);
-  await waitForFinish(ctx.runner, quiet.run.id);
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(ctx.store.itemRuns(quiet.run.itemId).length, 1);
-  ctx.useFakeAgent("edit");
-  const auto = ctx.runner.trigger(job, "manual");
-  assert.ok("run" in auto);
-  await waitForFinish(ctx.runner, auto.run.id);
-  await waitFor(() => ctx.store.itemRuns(auto.run.itemId).length === 2);
-  const autoRelease = ctx.store.itemRuns(auto.run.itemId)[1]!;
-  assert.equal(autoRelease.mode, "release");
-  assert.match(readFileSync(ctx.runner.logPath(autoRelease.id), "utf8"), /automatically/);
-  await waitForFinish(ctx.runner, autoRelease.id);
-
-  // A follow-up after a release is told it released, without the release instructions or leave to push.
+  // A follow-up after a release starts from what was released and is told how it went.
   ctx.useFakeAgent("edit");
   const after = await waitForFinish(ctx.runner, ctx.runner.followUp(released, "Rename the button").id);
   assert.equal(after.baseCommit, released.headCommit, "it starts from what was released, version bump included");
   const prompt = git(ctx.repo, "show", `${after.branch}:agent-output.txt`);
   assert.match(prompt, new RegExp(`Run #${released.id} released this item: the agent followed the job's release instructions, and it succeeded\\. This run doesn't release`));
   assert.doesNotMatch(prompt, /Release it: push main/);
+
+  // autoRelease releases only work whose check passed and whose report says it was implemented or fixed.
+  ctx.store.updateJob(job.id, input({ autoRelease: true, checkCommand: "true" }), null);
+  ctx.useFakeAgent("edit");
+  const triage = ctx.runner.trigger(job, "manual", "Verdict: needs the owner's decision");
+  assert.ok("run" in triage);
+  const proposal = await waitForFinish(ctx.runner, triage.run.id);
+  assert.equal(proposal.checkStatus, "passed");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(proposal.itemId).length, 1, "a proposal waits for the owner");
+  assert.match(readFileSync(ctx.runner.logPath(proposal.id), "utf8"), /Not releasing automatically: its report's verdict is unknown/);
+
+  ctx.useFakeAgent("implemented");
+  const fix = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in fix);
+  const fixed = await waitForFinish(ctx.runner, fix.run.id);
+  assert.equal(fixed.status, "succeeded", fixed.error ?? "");
+  await waitFor(() => ctx.store.itemRuns(fixed.itemId).length === 2);
+  const auto = ctx.store.itemRuns(fixed.itemId)[1]!;
+  assert.equal(auto.mode, "release");
+  assert.match(readFileSync(ctx.runner.logPath(fixed.id), "utf8"), /Releasing automatically: run #/);
+  await waitForFinish(ctx.runner, auto.id);
 });
 
 test("a run whose agent was removed from Settings fails without retries", async (t) => {
@@ -1031,6 +1048,41 @@ test("releaseOutcome reads the report's Released line", async () => {
   assert.equal(releaseOutcome("**Released**\nversion 2"), null);
   assert.equal(releaseOutcome("preamble\n# Released 0.8.0"), null);
   assert.match(releaseOutcome("Not released: tests failed") ?? "", /did not release/);
-  assert.match(releaseOutcome("I pushed it") ?? "", /doesn't say "Released"/);
+  assert.equal(releaseOutcome("I pushed it"), null, "git decides when the report says neither");
   assert.match(releaseOutcome("## Released 1.0 (from cat CHANGELOG.md)\n...\nNot released: tests failed") ?? "", /did not release/, "the report at the end wins");
+});
+
+test("a run takes the job's agent when it starts, not when it was queued for approval", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("noop");
+  const job = ctx.store.createJob(ctx.jobInput({ approveRuns: true }), null);
+  const waiting = ctx.runner.trigger(job, "webhook", "{}");
+  assert.ok("run" in waiting);
+  assert.equal(waiting.run.agent, "pi");
+  const settings = ctx.store.getSettings();
+  settings.agents["pi-fast"] = { command: settings.agents.pi!.command };
+  settings.defaultAgent = "pi-fast";
+  ctx.store.saveSettings(settings);
+  const approved = ctx.runner.approve(waiting.run.id)!;
+  const finished = await waitForFinish(ctx.runner, approved.id);
+  assert.equal(finished.agent, "pi-fast");
+  assert.match(readFileSync(ctx.runner.logPath(finished.id), "utf8"), /Agent: pi-fast \(the job's agent now; it was pi when queued\)/);
+});
+
+test("a release a server stop cut off says so when its result is already on the base branch", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const { INTERRUPTED } = await import("../src/store.ts");
+  const remote = path.join(ctx.root, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  git(ctx.repo, "remote", "add", "origin", remote);
+  git(ctx.repo, "push", "-q", "origin", "main");
+  const job = ctx.store.createJob(ctx.jobInput({ releaseInstructions: "Release it" }), null);
+  const root = ctx.store.createRun(job.id, "manual", "pi", null);
+  const release = ctx.store.createRelease(root, "pi", "Release it", "release");
+  const head = git(ctx.repo, "rev-parse", "main");
+  ctx.store.updateRun(release.id, { status: "failed", error: INTERRUPTED, baseCommit: head, finishedAt: new Date().toISOString() });
+  await ctx.runner.recheckInterruptedReleases(new Date(Date.now() - 60_000).toISOString());
+  assert.match(ctx.store.getRun(release.id)!.error ?? "", /it may have gone out\. Check it before releasing again/);
 });

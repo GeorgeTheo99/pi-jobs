@@ -8,7 +8,8 @@ import { RepoState } from "./changes.ts";
 import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolvesToCommit } from "./git.ts";
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { agentOutput, buildPrompt, releaseOutcome, type PreviousRun } from "./prompt.ts";
-import { ACTIVE_STATUSES, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
+import { RELEASABLE_VERDICTS, parseVerdict } from "./report.ts";
+import { ACTIVE_STATUSES, INTERRUPTED, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
 import { parseWatchOutput, runWatchCommand, type WatchResult } from "./watch.ts";
 
 /** Webhook bursts beyond this many queued runs per job are rejected. */
@@ -309,7 +310,16 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     clearTimeout(timer);
   }
 
-  private start(run: Run): void {
+  private start(queued: Run): void {
+    // The job's agent when the run starts, not when it was queued or waited for approval: changing the
+    // job's agent or the default applies to runs that haven't started. A release script runs no agent.
+    let run = queued;
+    const job = this.store.getJob(run.jobId);
+    const agent = job?.agent ?? this.store.getSettings().defaultAgent;
+    if (job && run.mode !== "ship" && agent !== run.agent) {
+      this.note(run.id, `Agent: ${agent} (the job's agent now; it was ${run.agent} when queued)`);
+      run = this.store.updateRun(run.id, { agent });
+    }
     const active: ActiveRun = {
       jobId: run.jobId,
       token: randomUUID(),
@@ -400,7 +410,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
             worktree: null,
             headCommit: baseCommit,
             commits: 0,
-            error: active.stopReason === "interrupted" ? "The server stopped while this run was in progress" : null,
+            error: active.stopReason === "interrupted" ? INTERRUPTED : null,
           },
           status === "timed_out" || (status === "failed" && active.stopReason !== "canceled"),
         );
@@ -418,10 +428,16 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
 
       const committed = await this.commitChanges(job, run, worktree, baseCommit);
       const { headCommit } = committed;
+      // A release is checked, not taken on the agent's word (agents often exit 0 after stopping at a failed
+      // step): its report mustn't say "Not released", the item's result must be on the base branch on
+      // origin, and the job's verify command must pass.
+      let releaseError: string | null = null;
+      if (release && exitCode === 0 && !active.stopReason) {
+        releaseError = releaseOutcome(this.readSummary(run.id)) ?? (await this.releasedCheck(job, run.id, baseCommit));
+        if (!releaseError) releaseError = await this.verify(job, run, active, worktree, deadline);
+      }
       // What a release leaves unreleased: commits not on the base branch it pushed to (a rebase there brings in others' commits).
       const commits = release ? await this.unreleasedCommits(job, worktree, baseCommit) : committed.commits;
-      // Agents usually exit 0 when they stop at a failed step, so a release succeeds only if its report says "Released".
-      const releaseError = release && exitCode === 0 && !active.stopReason ? releaseOutcome(this.readSummary(run.id)) : null;
       let status: RunStatus = runStatus(active.stopReason, exitCode === 0 && checkStatus !== "failed" && !releaseError);
 
       let pushedTo: string | null = null;
@@ -464,11 +480,11 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
           commits,
           checkStatus,
           pushedTo,
-          error: active.stopReason === "interrupted" ? "The server stopped while this run was in progress" : (pushError ?? releaseError),
+          error: active.stopReason === "interrupted" ? INTERRUPTED : (pushError ?? releaseError),
         },
         retryable,
       );
-      if (finished.status === "succeeded" && finished.mode === "change" && (finished.commits ?? 0) > 0) await this.autoRelease(finished);
+      if (finished.status === "succeeded" && finished.mode === "change" && (finished.commits ?? 0) > 0) await this.autoRelease(job, finished);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.note(run.id, `Error: ${message}`);
@@ -507,20 +523,21 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       this.note(run.id, `Checkout ${dir} (discarded after) at ${head.label} (${head.commit.slice(0, 12)})`);
       let exitCode: number | null = null;
       if (!active.stopReason) {
-        this.note(run.id, `Starting ship command: ${command}`);
+        this.note(run.id, `Starting release script: ${command}`);
         exitCode = await this.runProcess(run.id, active, ["/bin/sh", "-c", command], dir, deadline, releaseEnv(job, run, head.commit, head.branch));
         this.store.updateRun(run.id, { exitCode });
-        this.note(run.id, `Ship command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
+        this.note(run.id, `Release script exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
       }
+      const verifyError = exitCode === 0 ? await this.verify(job, run, active, dir, deadline) : null;
       await this.removeWorktree(job, dir);
       worktree = null;
-      const status: RunStatus = runStatus(active.stopReason, exitCode === 0);
+      const status: RunStatus = runStatus(active.stopReason, exitCode === 0 && !verifyError);
       const error =
         active.stopReason === "interrupted"
-          ? "The server stopped while this run was in progress"
-          : status === "failed"
-            ? `The ship command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`
-            : null;
+          ? INTERRUPTED
+          : status !== "failed"
+            ? null
+            : (verifyError ?? `The release script exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
       this.finish(run.id, { status, worktree: null, error });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -537,6 +554,50 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     return agents[agent]!.command;
   }
 
+  /**
+   * Why a release that exited 0 isn't out: the item's result (`commit`) isn't on the job's base branch
+   * on origin after a fetch (or locally, for a base that isn't a branch on origin). Null when it is.
+   */
+  private async releasedCheck(job: Job, runId: number, commit: string): Promise<string | null> {
+    const branch = baseBranch(job.baseRef);
+    let target = job.baseRef;
+    if (await isFetchableBranch(job.repoPath, job.baseRef)) {
+      target = `refs/remotes/${REMOTE}/${branch}`;
+      try {
+        await git(job.repoPath, ["fetch", "--quiet", "--no-tags", REMOTE, `+refs/heads/${branch}:${target}`], NETWORK_TIMEOUT_MS);
+      } catch (error) {
+        this.note(runId, `Could not fetch ${branch} to check the release (${(error as Error).message}); using the last fetched tip`);
+      }
+    }
+    const released = await git(job.repoPath, ["merge-base", "--is-ancestor", commit, target]).then(() => true, () => false);
+    this.note(runId, released ? `The item's result is on ${target.replace("refs/remotes/", "")}` : `The item's result (${commit.slice(0, 12)}) is not on ${target.replace("refs/remotes/", "")}`);
+    return released ? null : `The item's result isn't on ${target.replace("refs/remotes/", "")}, so it wasn't released`;
+  }
+
+  /**
+   * Releases cut off by a server stop (since `since`) may have gone out before it: each whose item
+   * result is now on the base branch on origin says so, so the owner checks before releasing again.
+   */
+  async recheckInterruptedReleases(since: string): Promise<void> {
+    for (const run of this.store.interruptedReleases(since)) {
+      const job = this.store.getJob(run.jobId);
+      if (!job || !run.baseCommit) continue;
+      if ((await this.releasedCheck(job, run.id, run.baseCommit)) !== null) continue;
+      this.store.updateRun(run.id, {
+        error: `${INTERRUPTED}, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`,
+      });
+    }
+  }
+
+  /** Runs the job's verify command after a release, in its checkout; why it failed, or null. */
+  private async verify(job: Job, run: Run, active: ActiveRun, cwd: string, deadline: number): Promise<string | null> {
+    if (!job.verifyCommand || active.stopReason) return null;
+    this.note(run.id, `Running verify command: ${job.verifyCommand}`);
+    const code = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.verifyCommand], cwd, deadline);
+    this.note(run.id, `Verify command ${code === 0 ? "passed" : `failed${code === null ? "" : ` (code ${code})`}`}`);
+    return code === 0 ? null : `The verify command failed${code === null ? "" : ` with code ${code}`}`;
+  }
+
   /** Commits on HEAD that the base branch on origin doesn't have (as last fetched or pushed), else since `baseCommit`. */
   private async unreleasedCommits(job: Job, worktree: string, baseCommit: string): Promise<number> {
     const tracking = `refs/remotes/${REMOTE}/${baseBranch(job.baseRef)}`;
@@ -544,10 +605,19 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     return Number(await git(worktree, ["rev-list", "--count", "HEAD", "--not", upstream, baseCommit]));
   }
 
-  /** Ships an item whose run just succeeded with changes, when its job releases automatically. */
-  private async autoRelease(run: Run): Promise<void> {
-    const job = this.store.getJob(run.jobId);
-    if (!job?.autoRelease || !job.enabled || (!job.releaseInstructions && !job.shipCommand)) return;
+  /**
+   * Releases an item whose run just succeeded with changes, when its job releases automatically and the
+   * run earned it: its check passed and its report says the work was implemented or fixed (not a
+   * proposal or a triage note waiting for the owner).
+   */
+  private async autoRelease(job: Job, run: Run): Promise<void> {
+    if (!job.autoRelease || !job.enabled || (!job.releaseInstructions && !job.shipCommand)) return;
+    const verdict = parseVerdict(run.summary);
+    if (run.checkStatus !== "passed" || !RELEASABLE_VERDICTS.includes(verdict)) {
+      const why = run.checkStatus !== "passed" ? "its check didn't pass" : `its report's verdict is ${verdict.replace("_", " ")}`;
+      this.note(run.id, `Not releasing automatically: ${why}; release it by hand if it's ready`);
+      return;
+    }
     try {
       const release = await this.release(run, { auto: true });
       this.note(run.id, `Releasing automatically: run #${release.id}`);
@@ -570,8 +640,9 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
    */
   private async itemHead(job: Job, previous: Run): Promise<{ commit: string; label: string; branch: string | null } | null> {
     for (let run: Run | null = previous; run; ) {
-      // A release that went out is the item's newest result, though it left nothing unreleased on a branch.
-      if (run.mode === "release" && run.status === "succeeded" && run.headCommit) {
+      // A release's head is the item's newest result whether or not it went out: it may have rebased,
+      // committed a version bump or pushed before a later step failed, leaving nothing on a branch.
+      if (run.mode === "release" && run.headCommit) {
         return { commit: run.headCommit, label: `run #${run.id}`, branch: null };
       }
       if (run.headCommit && (run.commits ?? 0) > 0) {

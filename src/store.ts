@@ -119,7 +119,7 @@ export interface Run {
 }
 
 export type RunPatch = Partial<
-  Omit<Run, "id" | "jobId" | "trigger" | "agent" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "itemId" | "createdAt">
+  Omit<Run, "id" | "jobId" | "trigger" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "itemId" | "createdAt">
 >;
 
 export const DEFAULT_RETRIES = 2;
@@ -307,6 +307,7 @@ type Row = Record<string, SQLInputValue>;
 
 const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   status: "status",
+  agent: "agent",
   summary: "summary",
   sessionId: "session_id",
   repliedAt: "replied_at",
@@ -325,6 +326,9 @@ const RUN_COLUMNS: Record<keyof RunPatch, string> = {
 };
 
 const now = () => new Date().toISOString();
+
+/** The error of a run a server stop cut off. */
+export const INTERRUPTED = "The server stopped while this run was in progress";
 
 const hashToken = (secret: string) => createHash("sha256").update(secret).digest("hex");
 
@@ -814,11 +818,19 @@ export class Store {
       .map((row) => Number((row as { id: number }).id));
   }
 
+  /** Releases a server stop cut off since `since`: they may have gone out before it. */
+  interruptedReleases(since: string): Run[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE mode = 'release' AND status = 'failed' AND error = ? AND finished_at >= ? ORDER BY id")
+      .all(INTERRUPTED, since)
+      .map((r) => toRun(r as Row));
+  }
+
   /** Runs that were mid-flight when the server stopped cannot be resumed; returns them, now failed. */
   failInterruptedRuns(): Run[] {
     return this.db
       .prepare("UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running' RETURNING *")
-      .all("The server stopped while this run was in progress", now())
+      .all(INTERRUPTED, now())
       .map((r) => toRun(r as Row));
   }
 

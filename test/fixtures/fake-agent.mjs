@@ -1,6 +1,6 @@
 // Stand-in for an agent CLI: `node fake-agent.mjs <mode> <prompt>`.
 import { execFileSync, spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const [spec, prompt = ""] = process.argv.slice(2);
 const [mode, pidFile] = spec.split(":");
@@ -28,11 +28,16 @@ switch (mode) {
   case "release":
     // Like a release: a version bump, pushed onto main; what it was told and given goes to the record file.
     writeFileSync(pidFile, JSON.stringify({ prompt, commit: process.env.PI_JOBS_SHIP_COMMIT, branch: process.env.PI_JOBS_SHIP_BRANCH }));
-    writeFileSync("VERSION", "2\n");
+    const version = (existsSync("VERSION") ? Number(readFileSync("VERSION", "utf8")) : 1) + 1;
+    writeFileSync("VERSION", `${version}\n`);
     execFileSync("git", ["add", "VERSION"]);
-    execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@example.com", "commit", "-qm", "Release 2"]);
+    execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@example.com", "commit", "-qm", `Release ${version}`]);
     execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
-    console.log("Released\nversion 2 is on main");
+    console.log(`Released\nversion ${version} is on main`);
+    break;
+  case "implemented":
+    writeFileSync("feature.txt", "done\n");
+    console.log("Implemented the feature.\nVerdict: implemented on this branch");
     break;
   case "not-released":
     console.log("**Not released**\nThe tests failed, so I stopped before pushing.");

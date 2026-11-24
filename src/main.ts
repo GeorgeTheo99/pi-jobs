@@ -14,6 +14,10 @@ const runner = new Runner({ store, stateDir: config.stateDir });
 const interrupted = store.failInterruptedRuns();
 if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 for (const run of interrupted) runner.retry(run);
+// Releases cut off by this stop, or a graceful one in the last day, may have gone out anyway.
+void runner.recheckInterruptedReleases(new Date(Date.now() - 24 * 60 * 60_000).toISOString()).catch((error) => {
+  console.error("Could not recheck interrupted releases:", error);
+});
 runner.backfillSummaries();
 const cutOff = store.failInterruptedTurns();
 if (cutOff.length > 0) console.warn(`Marked ${cutOff.length} interrupted chat repl${cutOff.length === 1 ? "y" : "ies"} as failed`);
