@@ -531,3 +531,49 @@ test("ship: the job keeps its ship command across older clients' updates; POST /
   assert.equal(refused.status, 409);
   assert.match(refused.json.error, /no release instructions or ship command/);
 });
+
+test("items, release previews and pinned releases through the API; who started a run is recorded", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("commit");
+  const job = (await app.call("POST", "/api/jobs", { name: "Fixes", repoPath: app.repo, prompt: "go", shipCommand: "true" })).json;
+  const started = await app.call("POST", `/api/jobs/${job.id}/run`, {});
+  assert.equal(started.json.requestedBy, "test", "Run now records the token");
+  const run = await waitForFinish(app.runner, started.json.id);
+
+  const items = (await app.call("GET", `/api/items?jobId=${job.id}`)).json;
+  assert.equal(items.length, 1);
+  assert.deepEqual([items[0].state, items[0].canRelease, items[0].withChangesId, items[0].runs[0].summary], ["review", true, run.id, undefined]);
+  assert.equal((await app.call("GET", "/api/items?waiting=1")).json.length, 1, "work to review waits on the owner");
+  const item = (await app.call("GET", `/api/runs/${run.id}/item`)).json;
+  assert.equal(typeof item.runs[0].summary, "string", "an item's page gets the reports");
+
+  const preview = (await app.call("GET", `/api/runs/${run.id}/release-preview`)).json;
+  assert.deepEqual(
+    [preview.head, preview.ahead, preview.behind, preview.conflicts, preview.files, preview.kind, preview.instructions],
+    [run.headCommit, 1, 0, false, 1, "script", "true"],
+  );
+  const moved = await app.call("POST", `/api/runs/${run.id}/release`, { expectedHead: "0".repeat(40) });
+  assert.equal(moved.status, 409);
+  assert.match(moved.json.error, /changed since you reviewed it/);
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/release`, { expectedHead: "abc" })).status, 400);
+  const release = await app.call("POST", `/api/runs/${run.id}/release`, { expectedHead: run.headCommit });
+  assert.equal(release.status, 200, JSON.stringify(release.json));
+  assert.deepEqual([release.json.mode, release.json.requestedBy], ["ship", "test"]);
+  await waitForFinish(app.runner, release.json.id);
+  const after = (await app.call("GET", `/api/runs/${run.id}/item`)).json;
+  assert.equal(after.state, "released");
+  assert.equal((await app.call("GET", "/api/items?waiting=1")).json.length, 0);
+});
+
+test("notification settings: older clients keep them; the test needs a saved command", async (t) => {
+  const app = await startApp(t);
+  assert.equal((await app.call("POST", "/api/settings/notify-test", {})).status, 409);
+  const settings = (await app.call("GET", "/api/settings")).json;
+  const saved = await app.call("PUT", "/api/settings", { ...settings, notifyCommand: " true ", publicUrl: "https://host.example/pi-jobs/" });
+  assert.deepEqual([saved.json.notifyCommand, saved.json.publicUrl], ["true", "https://host.example/pi-jobs"]);
+  const { notifyCommand: _n, publicUrl: _p, ...older } = saved.json;
+  const kept = await app.call("PUT", "/api/settings", older);
+  assert.deepEqual([kept.json.notifyCommand, kept.json.publicUrl], ["true", "https://host.example/pi-jobs"]);
+  const bad = await app.call("PUT", "/api/settings", { ...older, publicUrl: "host.example" });
+  assert.equal(bad.json.fields.publicUrl, "Use an http:// or https:// address");
+});

@@ -10,7 +10,7 @@ run and inspect jobs in natural language.
 Each run works in a fresh git worktree, runs your check command, and leaves its changes on a
 branch for review, like a pull request. **Approve & release** then has the agent release it the
 way the repository does (merge, push, deploy, publish), following the job's release
-instructions, or runs a ship script. Nothing merges or deploys until you press it, unless a job
+instructions, or runs a release script. Nothing merges or deploys until you press it, unless a job
 releases automatically.
 
 ## Install (macOS)
@@ -120,32 +120,43 @@ reply).
 A finished item is like a pull request: its changes are on a branch, with its report and diff on
 its page. **Approve & release** sends it out. A job releases in one of two ways, or not at all:
 
-| | **Release instructions** (the agent) | **Ship command** (a script) |
+| | **Release instructions** (the agent) | **Release script** (`shipCommand`) |
 |---|---|---|
-| What runs | The job's agent, continuing the item's conversation, in a worktree of the item's newest commits on a new branch | `/bin/sh -c <ship command>` in a temporary checkout of the item's newest commits (deleted after) |
+| What runs | The job's agent, continuing the item's conversation, in a worktree of the item's newest commits on a new branch | `/bin/sh -c <script>` in a temporary checkout of the item's newest commits (deleted after) |
 | What it may do | In this run only: merge, push, deploy and publish, as the instructions say. It is told to bring the commits onto the base branch on `origin` (rebasing and testing again if it moved), never force-push the base branch or skip hooks, stop at the first failure, and end with "Released" or "Not released" | Whatever the script does |
-| Suits | Repositories whose release is documented for agents (AGENTS.md): "release the way AGENTS.md says, then check /api/health" | A fixed, fail-closed script |
+| Suits | Repositories whose release is documented for agents (AGENTS.md): "release the way AGENTS.md says" | A fixed, fail-closed script |
 
-A job has one or the other. Both get `PI_JOBS_SHIP_COMMIT`, `PI_JOBS_SHIP_BRANCH`,
-`PI_JOBS_BASE_REF`, `PI_JOBS_REPO` and `PI_JOBS_ITEM_ID` (plus `PI_JOBS_RUN_ID` and
-`PI_JOBS_JOB_ID`).
+A job has one or the other, plus an optional **verify command** (a health check, say) that runs
+after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_RELEASE_BRANCH`
+(also as `PI_JOBS_SHIP_COMMIT` and `PI_JOBS_SHIP_BRANCH`), `PI_JOBS_BASE_REF`, `PI_JOBS_REPO` and
+`PI_JOBS_ITEM_ID` (plus `PI_JOBS_RUN_ID` and `PI_JOBS_JOB_ID`).
 
-- **Who starts it.** You, with **Approve & release** on a finished item whose newest work succeeded
-  (its check passed) and left changes (or `POST /api/runs/<id>/ship`). It needs no approval and
-  runs while the job is paused. With **Release automatically** (`autoRelease`), a run that succeeds
-  with changes releases at once; leave it off to review first.
+- **What you approve.** The item's page shows a **Release** section after its changes: the commit
+  that goes out, its size, how far `origin/<base>` has moved since and whether it merges cleanly
+  (after a quick fetch), and the check. **Approve & release** opens a confirmation naming that
+  commit; if a follow-up lands before the release starts, the release is refused
+  (`POST /api/runs/<id>/release` with `{"expectedHead": "<commit>"}`, 409 when it moved;
+  `GET /api/runs/<id>/release-preview` for the facts). It needs no approval of its own and runs
+  while the job is paused.
+- **Checked, not taken on the agent's word.** Agents often exit 0 after stopping at a failed step.
+  An agent's release succeeds only if its report doesn't end with "Not released", the item's result
+  is on `origin/<base>` after a fetch, and the verify command passes. A script's release needs exit
+  0 and the verify command.
+- **Release automatically** (`autoRelease`, needs a check command) releases a run at once when its
+  check passed and its report's verdict is implemented or fixed. Proposals, triage notes waiting
+  for your decision, failures and unchecked work still wait for you. With **Approve before
+  running** off too, a watch job goes from report to release on its own.
 - **Never retried.** A release may have done part of something irreversible, so after a failure you
-  decide what comes next. **Release again** runs it once more, on the item's newest commits.
+  decide what comes next. **Release again** runs it once more, from the release's own head (it may
+  have rebased or committed a version bump). A release a server stop cut off says so if its result
+  is already on the base branch.
 - **When it fails, the agent fixes it.** Send **Make changes** on the item: the agent continues the
-  conversation (and gets a ship command's output as context). When that run succeeds, release again.
-- **Done.** An agent's release succeeds only if it exits 0 and its report says "Released" (agents
-  often exit 0 after stopping at a failed step). A succeeded release marks the item **Shipped**.
-  Commits a release leaves off `origin/<base>` (a failed attempt's, say) stay on its branch for the
-  next run; once everything is on `origin/<base>`, its branch is removed.
-- **It runs as you.** The checkout holds what the agent wrote, ship script included, and runs with
-  your credentials. Review **Changes** before releasing, especially changes to release tooling.
-  Write ship scripts to fail closed (tests, a real install or a staging deploy before the step that
-  can't be undone) and safe to run again.
+  conversation (and gets a script's output as context). When that run succeeds, release again.
+- **Done.** A succeeded release marks the item **Released** and deletes the item's branches that
+  are already on the base branch. Commits a release leaves off `origin/<base>` stay on its branch.
+- **It runs as you.** The checkout holds what the agent wrote, release script included, and runs
+  with your credentials. Review **Changes** before releasing, especially changes to release
+  tooling. Write release scripts to fail closed and safe to run again.
 
 ### Chat
 
@@ -165,7 +176,7 @@ item starts one with that context.
   (agent commands and added agents too), create or revoke an API token, replace a webhook token. A card says what
   it does and shows the exact old and new value of every field it changes. If its job or the
   settings changed since it was proposed, applying it fails and asks for a fresh proposal.
-- **Review carefully.** Cards that set commands (check, watch, ship, agent), release instructions or
+- **Review carefully.** Cards that set commands (check, watch, release, verify, notify, agent), release instructions or
   automatic release, push branches, turn on a webhook, move a job to another repository, release,
   delete, or touch tokens are marked and are
   never part of **Apply all**. Instructions, payloads, reports and logs that the agent reads were
@@ -186,30 +197,34 @@ The API: `GET`/`POST /api/chats` (`{"message", "jobId"?, "runId"?}`), `GET`/`DEL
 
 ### The Inbox
 
-The home page groups runs into **items**: a run started by a trigger, with its retries and
-follow-ups (a support report's triage, your questions about it and the run that implements it are one item). Its
-sections are **Waiting for you** (runs to approve, and proposals that need your decision, with
-**Implement it**, which opens the composer with that instruction filled in), **In progress**, **To
-review** (changes on a branch) and **Recent** (shipped, merged, closed, failed). **Check now** checks every
-watch at once (`POST /api/watches/check`). The nav badge counts what is waiting for you.
+The home page groups runs into **items**: a run started by a trigger, with its retries, follow-ups
+and releases (a support report's triage, your questions about it, the run that implements it and
+its release are one item). **Waiting for you** holds failures (a release that didn't finish first),
+runs to approve (**Start**, or **Start all** and **Dismiss all**), proposals that need your decision
+(**Implement it** opens the composer with that instruction filled in) and changes ready to review.
+Then **In progress** and **Recent** (released, merged, closed). **Check now** checks every watch at
+once (`POST /api/watches/check`). The nav badge and the tab title count what is waiting for you.
 
 A run page shows its whole item as a conversation: what started it, then each of your messages
 and the agent's reply (its report, rendered; older long ones folded). Below that: the **Suggested
-reply** to the reporter with **Copy reply** and a **Replied** switch, **Changes** (changed files with
-their diffs, for the whole branch or one run, and the git commands to review, merge and push), the
-composer, and the selected run's details and log. The verdict (implemented, fixed, needs your decision, can't reproduce, duplicate, not
+reply** to the reporter (from which run, and whether later work made it stale) with **Copy reply**
+and a **Replied** switch, **Changes** (changed files with their diffs, for the whole branch or one
+run, code before tests and docs), **Release**, the composer, and the selected run's details (who
+started or approved it) and log. The verdict (implemented, fixed, needs your decision, can't reproduce, duplicate, not
 actionable) comes from the report's first line or its `Verdict:` line, so job prompts that end with
 a summary like that get the most from it.
 
 Items are **Merged** once their branch's commits are in the job's base branch (`origin/<base>` as
 last fetched, else the local branch). **Close item** marks one done without merging. The API behind
-these: `GET /api/runs/<id>/thread` (the item's runs, oldest first, with reports), a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
-`summaryVerdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
+these: `GET /api/items` (`?jobId=`, `?waiting=1`, `?limit=`; each item's `state`, `verdict`, runs and
+`canRelease`), `GET /api/runs/<id>/item` (one item with every run's report), a run's `summary` (the
+agent's report; lists carry `summaryHeadline`, `summaryVerdict` and `verdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
 up to 1 MiB), and `POST /api/runs/<id>/replied` or `/closed` with `{"value": true|false}`. pi-jobs
 never sends replies, and merges or pushes only in a release you start (or a job's Release
 automatically).
 
-Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
+Jobs are created with `POST /api/jobs` and changed with `PUT` or `PATCH /api/jobs/<id>`: either way
+only the fields sent change. Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
 
 A run that fails or times out is retried up to the job's **Retries** (default 2, at most 5) as a new
@@ -224,6 +239,23 @@ curl -X POST http://127.0.0.1:8790/api/hooks/1 \
   -d '{"title": "Crash when saving", "details": "..."}'
 ```
 
+### Notifications
+
+Settings' **notify command** runs (as you, `/bin/sh -c`, within 30 seconds) when something needs
+you: a run to approve (`approval`), work ready to review (`review`) or to decide on (`decision`), a
+failure no retry will fix (`failed`), a release that went out or failed (`released`,
+`release_failed`), and a watch that started failing (`watch_failed`). Work that releases itself
+announces its release instead of the review. It gets `PI_JOBS_EVENT`, `PI_JOBS_TITLE`,
+`PI_JOBS_MESSAGE`, `PI_JOBS_URL` (built from Settings' **address of this UI**), `PI_JOBS_JOB_ID` and
+`PI_JOBS_RUN_ID`, so any service works:
+
+```sh
+curl -fsS -H "Title: $PI_JOBS_TITLE" -H "Click: $PI_JOBS_URL" -d "$PI_JOBS_MESSAGE" ntfy.sh/<your-topic>
+```
+
+**Send a test notification** in Settings (`POST /api/settings/notify-test`) tries the saved command.
+A failing command is logged; it never holds up a run.
+
 ## Agents
 
 Settings holds one headless command line per agent. `{prompt}` becomes a single argument (never
@@ -235,7 +267,8 @@ agent** names another command line, typically a Pi launcher with its own model o
 | `pi-claude` | `pi-claude -p {prompt}` (a launcher script ending in `exec pi --model … "$@"`) |
 | `pi-gpt` | `pi --model openai/gpt-6 -p {prompt}` |
 
-Jobs, chats and the default pick agents by name; an agent a job uses can't be removed. Commands
+Jobs, chats and the default pick agents by name; an agent a job uses can't be removed. A run takes
+the job's agent when it starts, so changing it applies to runs still waiting for approval. Commands
 whose program is `pi` or `pi-…` count as Pi: pi-jobs adds `--session-id <id>` right after the
 program, so a launcher must pass its arguments on to Pi.
 
@@ -350,6 +383,6 @@ Vite and Tailwind 4 in a dark navy and amber theme.
 | `npm --prefix ui run dev` | Vite dev server, proxying `/api` to :8790 |
 | `npm run check` | Typecheck, server tests, UI lint and tests, UI build |
 
-Not built yet: notifications, and taking over a run interactively. Merging and pushing happen only
+Not built yet: taking over a run interactively, and releasing several items as one batch. Merging and pushing happen only
 in a release, which you start (or a job's Release automatically), on purpose: pushing a base
 branch deploys some apps.
