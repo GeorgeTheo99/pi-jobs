@@ -4,6 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { ShipRefusedError } from "../src/runner.ts";
+import type { Run } from "../src/store.ts";
 import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
 
 test("a successful run commits the agent's changes to a branch and removes the worktree", async (t) => {
@@ -149,6 +150,14 @@ const alive = (pid: number) => {
   }
 };
 
+async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) throw new Error("Timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function waitForFile(file: string): Promise<string> {
   while (!existsSync(file) || readFileSync(file, "utf8") === "") await new Promise((r) => setTimeout(r, 25));
   return readFileSync(file, "utf8");
@@ -219,7 +228,7 @@ test("a missing agent executable fails the run without crashing", async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);
   const settings = ctx.store.getSettings();
-  settings.agents.pi.command = "/nonexistent/agent {prompt}";
+  settings.agents.pi!.command = "/nonexistent/agent {prompt}";
   ctx.store.saveSettings(settings);
   const job = ctx.store.createJob(ctx.jobInput(), null);
   const result = ctx.runner.trigger(job, "manual");
@@ -745,7 +754,7 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   );
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = ctx.store.getSettings();
-  settings.agents.pi.command = `${path.join(bin, "pi")} edit {prompt}`;
+  settings.agents.pi!.command = `${path.join(bin, "pi")} edit {prompt}`;
   ctx.store.saveSettings(settings);
 
   const job = ctx.store.createJob(ctx.jobInput({ shipCommand: "echo shipped-ok" }), null);
@@ -836,7 +845,7 @@ test("a retry starts a new Pi session instead of resuming the failed attempt's",
   writeFileSync(path.join(bin, "pi"), `#!/bin/sh\n[ "$1" = "--session-id" ] && shift 2\nexec '${process.execPath}' '${FAKE}' "$@"\n`);
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = ctx.store.getSettings();
-  settings.agents.pi.command = `${path.join(bin, "pi")} fail {prompt}`;
+  settings.agents.pi!.command = `${path.join(bin, "pi")} fail {prompt}`;
   ctx.store.saveSettings(settings);
   const job = ctx.store.createJob(ctx.jobInput({ retries: 1 }), null);
   const first = ctx.runner.trigger(job, "manual");
@@ -873,7 +882,7 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.equal(changed.commits, 1);
   const other = ctx.runner.trigger(plain, "manual");
   assert.ok("run" in other);
-  await assert.rejects(ctx.runner.ship(await waitForFinish(ctx.runner, other.run.id)), /no ship command/);
+  await assert.rejects(ctx.runner.ship(await waitForFinish(ctx.runner, other.run.id)), /no release instructions or ship command/);
 
   // Paused jobs can still be shipped: the owner starts it.
   ctx.store.updateJob(job.id, { ...ctx.jobInput({ shipCommand, retries: 2 }), enabled: false }, null);
@@ -915,4 +924,112 @@ test("ship runs the job's ship command on the item's result; it is never retried
   ctx.runner.cancel(busy.id);
   const canceled = await waitForFinish(ctx.runner, busy.id);
   await assert.rejects(ctx.runner.ship(canceled), /Only a succeeded result can be shipped/);
+});
+
+test("a release run has the agent ship the item: it may push, is never retried, and autoRelease starts it by itself", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const remote = path.join(ctx.root, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  git(ctx.repo, "remote", "add", "origin", remote);
+  git(ctx.repo, "push", "-q", "origin", "main");
+  const record = path.join(ctx.root, "release.json");
+  const releaseInstructions = "Release it: push main, then check the version.";
+  const job = ctx.store.createJob(ctx.jobInput({ releaseInstructions, retries: 2 }), null);
+
+  ctx.useFakeAgent("commit");
+  const started = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in started);
+  const changed = await waitForFinish(ctx.runner, started.run.id);
+  assert.equal(changed.commits, 1);
+  assert.equal(ctx.store.itemRuns(changed.itemId).length, 1, "without autoRelease nothing ships by itself");
+
+  // Two releases of one item can't be queued at once.
+  ctx.useFakeAgent("not-released");
+  const [first, second] = await Promise.allSettled([ctx.runner.ship(changed), ctx.runner.ship(changed)]);
+  assert.equal(first.status, "fulfilled");
+  assert.equal(second.status, "rejected");
+  // An agent that exits 0 but reports "Not released" didn't release.
+  const stopped = await waitForFinish(ctx.runner, (first as PromiseFulfilledResult<Run>).value.id);
+  assert.equal(stopped.mode, "release");
+  assert.equal(stopped.status, "failed");
+  assert.equal(stopped.error, "The agent reported that it did not release");
+
+  // A failed release isn't retried: it may have done part of something irreversible.
+  ctx.useFakeAgent("fail");
+  const failed = await waitForFinish(ctx.runner, (await ctx.runner.ship(stopped)).id);
+  assert.equal(failed.mode, "release");
+  assert.equal(failed.status, "failed");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(changed.itemId).length, 3, "a failed release is not retried");
+  assert.equal(failed.commits, 1, "what it left unreleased (its partial work) stays on its branch");
+
+  // The owner releases again.
+  ctx.useFakeAgent(`release:${record}`);
+  const queued = await ctx.runner.ship(failed);
+  assert.equal(queued.mode, "release");
+  assert.equal(queued.instructions, releaseInstructions);
+  assert.equal(queued.agent, "pi");
+  const released = await waitForFinish(ctx.runner, queued.id);
+  assert.equal(released.status, "succeeded", released.error ?? "");
+  assert.equal(released.baseCommit, failed.headCommit, "it builds on the newest commits, the failed attempt's leftovers included");
+  assert.equal(git(remote, "rev-parse", "main"), released.headCommit, "the agent pushed main");
+  assert.equal(released.commits, 0, "nothing is left unreleased");
+  assert.equal(released.branch, null);
+  assert.match(released.summary ?? "", /^Released$/m);
+  const seen = JSON.parse(readFileSync(record, "utf8")) as { prompt: string; commit: string; branch: string };
+  assert.ok(seen.prompt.startsWith(releaseInstructions));
+  assert.match(seen.prompt, /This run is the release\. Unlike the item's earlier runs, you may merge, push, deploy and publish/);
+  assert.match(seen.prompt, /Never force-push/);
+  assert.equal(seen.commit, released.baseCommit);
+  assert.ok(seen.branch.startsWith("pi-jobs/"));
+  assert.ok((await ctx.runner.mergedRuns([changed])).has(changed.id), "the item counts as merged once main has it");
+
+  // With autoRelease, a run that succeeds with changes releases at once; one without changes doesn't.
+  ctx.store.updateJob(job.id, ctx.jobInput({ releaseInstructions, autoRelease: true }), null);
+  ctx.useFakeAgent("noop");
+  const quiet = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in quiet);
+  await waitForFinish(ctx.runner, quiet.run.id);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(quiet.run.itemId).length, 1);
+  ctx.useFakeAgent("edit");
+  const auto = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in auto);
+  await waitForFinish(ctx.runner, auto.run.id);
+  await waitFor(() => ctx.store.itemRuns(auto.run.itemId).length === 2);
+  const autoRelease = ctx.store.itemRuns(auto.run.itemId)[1]!;
+  assert.equal(autoRelease.mode, "release");
+  assert.match(readFileSync(ctx.runner.logPath(autoRelease.id), "utf8"), /automatically/);
+  await waitForFinish(ctx.runner, autoRelease.id);
+
+  // A follow-up after a release is told it released, without the release instructions or leave to push.
+  ctx.useFakeAgent("edit");
+  const after = await waitForFinish(ctx.runner, ctx.runner.followUp(released, "Rename the button").id);
+  assert.equal(after.baseCommit, released.headCommit, "it starts from what was released, version bump included");
+  const prompt = git(ctx.repo, "show", `${after.branch}:agent-output.txt`);
+  assert.match(prompt, new RegExp(`Run #${released.id} released this item: the agent followed the job's release instructions, and it succeeded\\. This run doesn't release`));
+  assert.doesNotMatch(prompt, /Release it: push main/);
+});
+
+test("a run whose agent was removed from Settings fails without retries", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const job = ctx.store.createJob(ctx.jobInput({ agent: "gone", retries: 2 }), null);
+  const started = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in started);
+  const failed = await waitForFinish(ctx.runner, started.run.id);
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /The agent "gone" is no longer in Settings/);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(failed.itemId).length, 1, "not retried");
+});
+
+test("releaseOutcome reads the report's Released line", async () => {
+  const { releaseOutcome } = await import("../src/runner.ts");
+  assert.equal(releaseOutcome("**Released**\nversion 2"), null);
+  assert.equal(releaseOutcome("preamble\n# Released 0.8.0"), null);
+  assert.match(releaseOutcome("Not released: tests failed") ?? "", /did not release/);
+  assert.match(releaseOutcome("I pushed it") ?? "", /doesn't say "Released"/);
+  assert.match(releaseOutcome("## Released 1.0 (from cat CHANGELOG.md)\n...\nNot released: tests failed") ?? "", /did not release/, "the report at the end wins");
 });

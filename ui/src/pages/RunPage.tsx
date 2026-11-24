@@ -5,7 +5,7 @@ import { Changes } from "@/components/Changes";
 import { ItemPill } from "@/components/Items";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton, ErrorNote, Skeleton, StatusPill, Switch } from "@/components/ui";
-import { AGENT_LABELS, ApiError, TRIGGER_LABELS, api, isActive, type Job, type Run, type RunMode } from "@/lib/api";
+import { agentLabel, ApiError, TRIGGER_LABELS, api, isActive, isShipMode, type Job, type Run, type RunMode } from "@/lib/api";
 import { dateTime, duration, relativeTime, repoName, summarizePayload } from "@/lib/format";
 import { canShip, groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
 import { VERDICT_LABELS, parseVerdict, splitReply, type Verdict } from "@/lib/report";
@@ -83,19 +83,22 @@ export function RunPage() {
               <MessagesSquare aria-hidden className="size-3.5" />
               Chat about it
             </Link>
-            {job && canShip(item, job.shipCommand) && (
+            {job && canShip(item, job) && (
               <button
                 type="button"
                 className={`btn ${item.state === "shipped" ? "btn-ghost" : "btn-primary"}`}
-                title={`Runs ${job.shipCommand} on this item's result`}
+                title={job.releaseInstructions ? `${agentLabel(job.effectiveAgent)} releases this item's result by the job's release instructions` : `Runs ${job.shipCommand} on this item's result`}
                 onClick={() => {
                   const commit = item.withChanges?.headCommit?.slice(0, 12) ?? "";
-                  if (!window.confirm(`Ship this item's result (${commit})?\n\nRuns: ${job.shipCommand}\n\nIt runs as you, with your credentials, and may do things that can't be undone.`)) return;
+                  const how = job.releaseInstructions
+                    ? `${agentLabel(job.effectiveAgent)} follows the job's release instructions and may merge, push, deploy and publish:\n\n${job.releaseInstructions}`
+                    : `Runs: ${job.shipCommand}`;
+                  if (!window.confirm(`Release this item's result (${commit})?\n\n${how}\n\nIt runs as you, with your credentials, and may do things that can't be undone.`)) return;
                   void act(() => api.ship(item.latest.id));
                 }}
               >
                 <Rocket aria-hidden className="size-3.5" />
-                {item.latestWork.mode === "ship" ? "Ship again" : "Ship"}
+                {isShipMode(item.latestWork.mode) ? "Release again" : "Approve & release"}
               </button>
             )}
             {itemFinished && item.state !== "merged" && item.state !== "shipped" && (
@@ -220,8 +223,8 @@ function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = parseVerdict(run.summary);
   const [label, tone] =
-    run.mode === "ship"
-      ? ["Shipped", "pill-violet"]
+    isShipMode(run.mode)
+      ? [run.mode === "release" ? "Released" : "Shipped", "pill-violet"]
       : run.mode === "ask"
       ? ["Answered", "pill-muted"]
       : run.merged
@@ -261,7 +264,7 @@ function ItemHeader({ item, job, actions }: { item: Item; job: Job | null; actio
           <ItemPill item={item} />
           <span>
             {item.runs.length} run{item.runs.length === 1 ? "" : "s"}
-            {job && ` · ${AGENT_LABELS[job.effectiveAgent]} on ${repoName(job.repoPath)}`}
+            {job && ` · ${agentLabel(job.effectiveAgent)} on ${repoName(job.repoPath)}`}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">{actions}</div>
@@ -286,14 +289,22 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
   const long = report.length > 280 || report.split("\n").length > 4;
   const [expanded, setExpanded] = useState(selected || latest || !long);
   const ask = run.mode === "ask";
+  const release = run.mode === "release";
   if (run.mode === "ship") return <ShipTurn run={run} selected={selected} />;
   return (
     <div className="grid gap-3">
       {run.instructions !== null && run.retryOf === null ? (
         <div className="turn-you">
           <div className="turn-label">
-            {ask ? <MessageCircleQuestion aria-hidden className="size-3.5" /> : <Wrench aria-hidden className="size-3.5" />}
-            You · {ask ? "Ask" : "Make changes"} · {relativeTime(run.createdAt, now)}
+            {ask ? (
+              <MessageCircleQuestion aria-hidden className="size-3.5" />
+            ) : release ? (
+              <Rocket aria-hidden className="size-3.5" />
+            ) : (
+              <Wrench aria-hidden className="size-3.5" />
+            )}
+            {/* A release may come from the job's Release automatically, not the owner. */}
+            {release ? "Release" : `You · ${ask ? "Ask" : "Make changes"}`} · {relativeTime(run.createdAt, now)}
           </div>
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
         </div>
@@ -323,7 +334,7 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
           <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
         ) : run.status === "running" ? (
           <p className="text-[14px] text-fog">
-            {ask ? "Looking into it…" : "Working on it…"}{" "}
+            {ask ? "Looking into it…" : release ? "Releasing…" : "Working on it…"}{" "}
             {!selected && (
               <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
                 Watch the log
@@ -422,7 +433,7 @@ function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | nul
           Start this run?
         </h2>
         <p className="max-w-[72ch] text-[14px] leading-relaxed text-fog">
-          {APPROVAL_REASONS[run.trigger]} Approving starts {AGENT_LABELS[run.agent]}
+          {APPROVAL_REASONS[run.trigger]} Approving starts {agentLabel(run.agent)}
           {job ? (
             <>
               {" "}
@@ -679,10 +690,10 @@ function RunDetails({ run, job }: { run: Run; job: Job | null }) {
     [
       "Trigger",
       run.followUpOf !== null
-        ? `${run.mode === "ask" ? "Question" : run.mode === "ship" ? "Ship" : "Change request"} after #${run.followUpOf}`
+        ? `${run.mode === "ask" ? "Question" : run.mode === "ship" ? "Ship" : run.mode === "release" ? "Release" : "Change request"} after #${run.followUpOf}`
         : TRIGGER_LABELS[run.trigger],
     ],
-    ["Agent", run.mode === "ship" ? "None (ship command)" : AGENT_LABELS[run.agent]],
+    ["Agent", run.mode === "ship" ? "None (ship command)" : agentLabel(run.agent)],
     ["Created", dateTime(run.createdAt)],
     [
       "Started",

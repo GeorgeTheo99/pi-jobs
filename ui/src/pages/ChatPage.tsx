@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { ActionCard } from "@/components/ActionCard";
 import { Markdown } from "@/components/Markdown";
 import { ErrorNote, PageHeader, Skeleton } from "@/components/ui";
-import { AGENT_LABELS, api, type ChatAction, type ChatTurn, type ChatWithTurns } from "@/lib/api";
+import { agentLabel, api, type ChatAction, type ChatTurn, type ChatWithTurns } from "@/lib/api";
 import { duration, relativeTime } from "@/lib/format";
 import { useNow, usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
@@ -97,6 +97,8 @@ export function ChatsPage() {
   const jobId = params.get("jobId") ? Number(params.get("jobId")) : undefined;
   const runId = params.get("runId") ? Number(params.get("runId")) : undefined;
   const { data: chats, error, refresh } = usePoll(api.chats, (latest) => (latest?.some((c) => c.busy) ? 3000 : 10_000));
+  const { data: settings } = usePoll(api.settings, null);
+  const [agent, setAgent] = useState<string>("");
   useRefreshOnChange(refresh);
   const navigate = useNavigate();
   const now = useNow();
@@ -112,17 +114,28 @@ export function ChatsPage() {
       <PageHeader title="Chat" meta="Manage jobs by asking: the agent proposes, you apply." />
       <div className="mx-auto grid max-w-[880px] gap-8">
         <div className="grid gap-3">
-          {(jobId !== undefined || runId !== undefined) && (
-            <div className="justify-self-start">
-              <About jobId={jobId ?? null} runId={runId ?? null} />
-            </div>
-          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>{(jobId !== undefined || runId !== undefined) && <About jobId={jobId ?? null} runId={runId ?? null} />}</div>
+            {settings && Object.keys(settings.agents).length > 1 && (
+              <label className="flex items-center gap-2 text-[12px] text-fog">
+                Agent
+                <select className="field w-auto py-1 text-[13px]" value={agent} onChange={(e) => setAgent(e.target.value)}>
+                  <option value="">Default ({agentLabel(settings.defaultAgent)})</option>
+                  {Object.keys(settings.agents).map((id) => (
+                    <option key={id} value={id}>
+                      {agentLabel(id)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
           <Composer
             busy={false}
             autoFocus
             placeholder={placeholder}
             onSend={async (message) => {
-              const chat = await api.createChat(message, { jobId, runId });
+              const chat = await api.createChat(message, { jobId, runId, ...(agent ? { agent } : {}) });
               navigate(`/chats/${chat.id}`);
             }}
           />
@@ -231,7 +244,7 @@ function Turn({
       </div>
       <div className="turn-agent">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
-          <span className="turn-label">{AGENT_LABELS[chat.agent]}</span>
+          <span className="turn-label">{agentLabel(chat.agent)}</span>
           {turn.status === "failed" && <span className="pill pill-red">Failed</span>}
           {turn.status === "canceled" && <span className="pill pill-muted">Stopped</span>}
           {turn.startedAt && <span>{duration(turn.startedAt, turn.finishedAt, now)}</span>}

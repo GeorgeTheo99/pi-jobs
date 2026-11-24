@@ -2,13 +2,16 @@
 
 Scheduled, webhook-triggered, watch-triggered and on-demand coding-agent jobs for your git repositories, with a
 web UI to manage jobs, schedules and runs. It runs [Pi](https://pi.dev) by
-default; Claude Code and Codex are selectable per job or as the default in Settings. From any Pi
+default; Claude Code, Codex and your own launchers (a Pi launcher with its own model, say) are
+selectable per job, per chat or as the default in Settings. From any Pi
 session, [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s `jobs_*` tools create, change,
 run and inspect jobs in natural language.
 
 Each run works in a fresh git worktree, runs your check command, and leaves its changes on a
-branch for review. pi-jobs never merges or deploys by itself: a job can have a ship command (your
-repository's own merge, release or deploy script) that runs only when you press **Ship**.
+branch for review, like a pull request. **Approve & release** then has the agent release it the
+way the repository does (merge, push, deploy, publish), following the job's release
+instructions, or runs a ship script. Nothing merges or deploys until you press it, unless a job
+releases automatically.
 
 ## Install (macOS)
 
@@ -58,7 +61,7 @@ which URL each machine's Pi tools use, are configuration.
    machine can `git fetch origin <branch>`. A rejected push (a pre-receive hook, say) fails the
    run and keeps the worktree.
 
-Runs never merge or deploy ([Ship](#ship) is the owner's step). Before turning on branch pushes for a repository, check what its
+Runs never merge or deploy ([releasing](#release) is the owner's step). Before turning on branch pushes for a repository, check what its
 `origin` does with new branches: deploy hooks that act on any branch, or a public host where the
 branch becomes visible. Review a branch with the command shown on its run page, then merge it
 yourself.
@@ -99,8 +102,8 @@ Once a run finishes, you continue its item from the composer at the bottom of it
 | The agent | Reads code and runs read-only commands in a temporary checkout of the item's newest commits, then answers | Edits, tests and commits on a new branch built on the item's newest commits |
 | Kept | The answer only: no branch, no commits, no check command | The answer and the commits, shown under **Changes** |
 
-With Pi, every run of an item continues one conversation: pi-jobs gives the item a session ID
-(`pi --session-id`) and runs it in the same directory (`worktrees/job-<id>/item-<id>`), so the agent
+With Pi (or a `pi-…` launcher, see [Agents](#agents)), every run of an item continues one
+conversation: pi-jobs gives the item a session ID (`pi --session-id`) and runs it in the same directory (`worktrees/job-<id>/item-<id>`), so the agent
 remembers what it read, tried and was asked. A retry starts a new session, since its checkout starts
 over. Other agents, and Pi when there is no earlier session, get the earlier run's instructions,
 payload and report in the prompt instead. Your message comes first; where the context differs, it
@@ -112,41 +115,37 @@ paused (retries, as for any run, only while the job is on). Presets fill in comm
 (implement the proposal, what are the risks, explain the changes, address review notes, shorten the
 reply).
 
-### Ship
+### Release
 
-A job's **Ship command** is how an item's result goes out: merging it, releasing, deploying,
-whatever the repository's own script does. pi-jobs knows nothing about how a project ships; it
-gives the script the result and reports what happened. Leave the field empty and the job never
-ships.
+A finished item is like a pull request: its changes are on a branch, with its report and diff on
+its page. **Approve & release** sends it out. A job releases in one of two ways, or not at all:
 
-- **Only you start it.** **Ship** appears on a finished item whose newest work succeeded (its
-  check passed) and left changes (or `POST /api/runs/<id>/ship`). It needs no approval, runs while
-  the job is paused, and is never retried: a ship may have done part of something irreversible,
-  so after a failure you decide what comes next. **Ship again** runs it once more.
-- **What it runs.** `/bin/sh -c <ship command>` in a temporary checkout of the item's newest
-  commits (deleted after), as you, within the job's timeout, with:
+| | **Release instructions** (the agent) | **Ship command** (a script) |
+|---|---|---|
+| What runs | The job's agent, continuing the item's conversation, in a worktree of the item's newest commits on a new branch | `/bin/sh -c <ship command>` in a temporary checkout of the item's newest commits (deleted after) |
+| What it may do | In this run only: merge, push, deploy and publish, as the instructions say. It is told to bring the commits onto the base branch on `origin` (rebasing and testing again if it moved), never force-push the base branch or skip hooks, stop at the first failure, and end with "Released" or "Not released" | Whatever the script does |
+| Suits | Repositories whose release is documented for agents (AGENTS.md): "release the way AGENTS.md says, then check /api/health" | A fixed, fail-closed script |
 
-  | Variable | Value |
-  |---|---|
-  | `PI_JOBS_SHIP_COMMIT` | The commit to ship |
-  | `PI_JOBS_SHIP_BRANCH` | The run branch it is on (`pi-jobs/<job>/run-<id>`) |
-  | `PI_JOBS_BASE_REF` | The job's base branch |
-  | `PI_JOBS_REPO` | The job's repository (your checkout) |
-  | `PI_JOBS_ITEM_ID`, `PI_JOBS_RUN_ID`, `PI_JOBS_JOB_ID` | Where it came from |
+A job has one or the other. Both get `PI_JOBS_SHIP_COMMIT`, `PI_JOBS_SHIP_BRANCH`,
+`PI_JOBS_BASE_REF`, `PI_JOBS_REPO` and `PI_JOBS_ITEM_ID` (plus `PI_JOBS_RUN_ID` and
+`PI_JOBS_JOB_ID`).
 
-  Exit 0 and the item is **Shipped**; anything else fails the ship run, with the command's output
-  as its report.
-- **When it fails, the agent fixes it.** Send **Make changes** on the item: the agent gets what
-  the ship printed (the end) as context, and continues the item's conversation. When that run
-  succeeds, ship again. A release whose acceptance test catches a bad upgrade goes: ship fails,
-  the agent fixes the packaging, ship succeeds.
-- **Write the script to fail closed.** Put the checks that matter (tests, a real install or
-  upgrade, a staging deploy) before the step that can't be undone, and stop at the first failure.
-  Make it safe to run again: it may be re-run after a partial failure. A ship script typically
-  starts by fast-forwarding the base branch to `PI_JOBS_SHIP_COMMIT` and pushing it.
-- **It runs the item's code.** The checkout holds what the agent wrote, ship script included,
-  and runs with your credentials. The agent could already run anything as you (see Safety), but
-  review **Changes** before shipping, especially changes to the script itself.
+- **Who starts it.** You, with **Approve & release** on a finished item whose newest work succeeded
+  (its check passed) and left changes (or `POST /api/runs/<id>/ship`). It needs no approval and
+  runs while the job is paused. With **Release automatically** (`autoRelease`), a run that succeeds
+  with changes releases at once; leave it off to review first.
+- **Never retried.** A release may have done part of something irreversible, so after a failure you
+  decide what comes next. **Release again** runs it once more, on the item's newest commits.
+- **When it fails, the agent fixes it.** Send **Make changes** on the item: the agent continues the
+  conversation (and gets a ship command's output as context). When that run succeeds, release again.
+- **Done.** An agent's release succeeds only if it exits 0 and its report says "Released" (agents
+  often exit 0 after stopping at a failed step). A succeeded release marks the item **Shipped**.
+  Commits a release leaves off `origin/<base>` (a failed attempt's, say) stay on its branch for the
+  next run; once everything is on `origin/<base>`, its branch is removed.
+- **It runs as you.** The checkout holds what the agent wrote, ship script included, and runs with
+  your credentials. Review **Changes** before releasing, especially changes to release tooling.
+  Write ship scripts to fail closed (tests, a real install or a staging deploy before the step that
+  can't be undone) and safe to run again.
 
 ### Chat
 
@@ -162,12 +161,13 @@ item starts one with that context.
   happens until you **Apply** it.
 - **Cards are API calls.** Applying a card makes the same request as the matching button, with the
   same validation: create, change, pause or delete a job, Run now, check a watch, Ask or Make
-  changes on an item, approve, dismiss, cancel, Ship, close or mark replied, change Settings
-  (agent commands too), create or revoke an API token, replace a webhook token. A card says what
+  changes on an item, approve, dismiss, cancel, release, close or mark replied, change Settings
+  (agent commands and added agents too), create or revoke an API token, replace a webhook token. A card says what
   it does and shows the exact old and new value of every field it changes. If its job or the
   settings changed since it was proposed, applying it fails and asks for a fresh proposal.
-- **Review carefully.** Cards that set commands (check, watch, ship, agent), push branches, turn
-  on a webhook, move a job to another repository, ship, delete, or touch tokens are marked and are
+- **Review carefully.** Cards that set commands (check, watch, ship, agent), release instructions or
+  automatic release, push branches, turn on a webhook, move a job to another repository, release,
+  delete, or touch tokens are marked and are
   never part of **Apply all**. Instructions, payloads, reports and logs that the agent reads were
   written by others, so read these cards in full before applying them.
 - **Secrets stay out of the conversation.** The agent never sees a token's value. A token a card
@@ -175,7 +175,8 @@ item starts one with that context.
   or sent to the agent, which hears only that it was created.
 - **One conversation.** With Pi, a chat's messages continue one session, and each turn tells the
   agent what became of the changes it proposed last. Other agents get the conversation so far in
-  the prompt. One reply is written at a time per chat (at most 4 at once), for up to 15 minutes;
+  the prompt. A chat uses the default agent unless you pick another when starting it. One reply is
+  written at a time per chat (at most 4 at once), for up to 15 minutes;
   **Stop** ends one. Pi's `jobs_*` tools aren't loaded in a chat's agent: it proposes, never acts.
 
 The API: `GET`/`POST /api/chats` (`{"message", "jobId"?, "runId"?}`), `GET`/`DELETE
@@ -205,8 +206,8 @@ last fetched, else the local branch). **Close item** marks one done without merg
 these: `GET /api/runs/<id>/thread` (the item's runs, oldest first, with reports), a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
 `summaryVerdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
 up to 1 MiB), and `POST /api/runs/<id>/replied` or `/closed` with `{"value": true|false}`. pi-jobs
-never sends replies, merges or pushes by itself: those stay with you, or with the ship command you
-start.
+never sends replies, and merges or pushes only in a release you start (or a job's Release
+automatically).
 
 Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
@@ -226,7 +227,17 @@ curl -X POST http://127.0.0.1:8790/api/hooks/1 \
 ## Agents
 
 Settings holds one headless command line per agent. `{prompt}` becomes a single argument (never
-passed through a shell); without it the prompt is appended.
+passed through a shell); without it the prompt is appended. Besides the three built-ins, **Add an
+agent** names another command line, typically a Pi launcher with its own model or profile:
+
+| Name | Command |
+|---|---|
+| `pi-claude` | `pi-claude -p {prompt}` (a launcher script ending in `exec pi --model … "$@"`) |
+| `pi-gpt` | `pi --model openai/gpt-6 -p {prompt}` |
+
+Jobs, chats and the default pick agents by name; an agent a job uses can't be removed. Commands
+whose program is `pi` or `pi-…` count as Pi: pi-jobs adds `--session-id <id>` right after the
+program, so a launcher must pass its arguments on to Pi.
 
 | Agent | Preset |
 |---|---|
@@ -340,4 +351,5 @@ Vite and Tailwind 4 in a dark navy and amber theme.
 | `npm run check` | Typecheck, server tests, UI lint and tests, UI build |
 
 Not built yet: notifications, and taking over a run interactively. Merging and pushing happen only
-through a ship command you start, on purpose: pushing a base branch deploys some apps.
+in a release, which you start (or a job's Release automatically), on purpose: pushing a base
+branch deploys some apps.

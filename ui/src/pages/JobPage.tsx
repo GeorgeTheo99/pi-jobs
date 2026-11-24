@@ -4,8 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ItemList } from "@/components/Items";
 import { CopyButton, ErrorNote, Field, PageHeader, Skeleton, Switch } from "@/components/ui";
 import {
-  AGENT_IDS,
-  AGENT_LABELS,
+  agentLabel,
   ApiError,
   api,
   apiUrl,
@@ -35,6 +34,8 @@ const EMPTY_DRAFT: JobDraft = {
   retries: 2,
   watchCommand: "",
   shipCommand: "",
+  releaseInstructions: "",
+  autoRelease: false,
   approveRuns: false,
   enabled: true,
 };
@@ -109,6 +110,9 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
   };
 
   const defaultAgent = settings.data?.defaultAgent;
+  // Settings' agents (built-ins, then added Pi launchers and the like), plus the job's own if it was since removed.
+  const agentIds = Object.keys(settings.data?.agents ?? { pi: null, claude: null, codex: null });
+  if (draft.agent && !agentIds.includes(draft.agent)) agentIds.push(draft.agent);
 
   return (
     <>
@@ -197,11 +201,11 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
           <Section title="Agent">
             <div role="radiogroup" aria-label="Agent" className="segmented">
               <SegmentButton checked={draft.agent === null} onClick={() => set("agent", null)}>
-                Default{defaultAgent ? ` (${AGENT_LABELS[defaultAgent]})` : ""}
+                Default{defaultAgent ? ` (${agentLabel(defaultAgent)})` : ""}
               </SegmentButton>
-              {AGENT_IDS.map((agent: AgentId) => (
+              {agentIds.map((agent: AgentId) => (
                 <SegmentButton key={agent} checked={draft.agent === agent} onClick={() => set("agent", agent)}>
-                  {AGENT_LABELS[agent]}
+                  {agentLabel(agent)}
                 </SegmentButton>
               ))}
             </div>
@@ -310,10 +314,38 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               checked={draft.pushBranch}
               onChange={(v) => set("pushBranch", v)}
             />
+            <ToggleRow
+              label="Enabled"
+              hint="Paused jobs ignore their schedule and webhook. You can still run them by hand."
+              checked={draft.enabled}
+              onChange={(v) => set("enabled", v)}
+            />
+          </Section>
+
+          <Section title="Release">
+            <p className="-mt-1 text-[13px] leading-snug text-fog">
+              How a finished item goes out, like merging an approved pull request. Either gives finished items with changes an{" "}
+              <span className="text-bone">Approve &amp; release</span> button.
+            </p>
             <Field
-              label="Ship command"
+              label="Release instructions"
+              error={fields.releaseInstructions}
+              hint="For the agent. It continues the item's conversation in a worktree of its result and, in that run only, may merge, push, deploy and publish. Say how this repository releases, or point to its AGENTS.md. It is never retried; a failure goes back to the agent with your next Make changes."
+            >
+              {(p) => (
+                <textarea
+                  {...p}
+                  className="field min-h-[120px] resize-y leading-relaxed"
+                  value={draft.releaseInstructions}
+                  onChange={(e) => set("releaseInstructions", e.target.value)}
+                  placeholder="Release this the way AGENTS.md says: rebase onto origin/main, run the tests, push main, wait for the deploy and check /api/health."
+                />
+              )}
+            </Field>
+            <Field
+              label="Or a ship command"
               error={fields.shipCommand}
-              hint="Optional. Adds Ship to finished items: it runs this in a checkout of the item's result (PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF, PI_JOBS_REPO) only when you press it. Use your repository's own merge, release or deploy script; a failure goes back to the agent as context for the next follow-up."
+              hint="A script instead of the agent: it runs in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO. Write it to fail closed; its output goes back to the agent with your next Make changes."
             >
               {(p) => (
                 <input
@@ -328,11 +360,12 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               )}
             </Field>
             <ToggleRow
-              label="Enabled"
-              hint="Paused jobs ignore their schedule and webhook. You can still run them by hand."
-              checked={draft.enabled}
-              onChange={(v) => set("enabled", v)}
+              label="Release automatically"
+              hint="Release every run that succeeds with changes, without waiting for you. Leave off to review first."
+              checked={draft.autoRelease}
+              onChange={(v) => set("autoRelease", v)}
             />
+            {fields.autoRelease && <p className="-mt-3 text-[12px] text-red">{fields.autoRelease}</p>}
           </Section>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-steel/35 pt-5">
@@ -363,12 +396,12 @@ function JobItems({ job }: { job: Job }) {
   const facts = [
     job.enabled ? null : "Paused",
     job.watchCommand ? "Watches for new items" : null,
-    job.shipCommand ? "Ship button on finished items" : null,
+    job.releaseInstructions || job.shipCommand ? (job.autoRelease ? "Releases automatically" : "Approve & release on finished items") : null,
     job.schedule ? `${describeSchedule(job.schedule)}${job.nextRunAt ? `, next ${relativeTime(job.nextRunAt, now)}` : ""}` : "No schedule",
     job.watchCommand && job.watchCheckedAt ? `checked ${relativeTime(job.watchCheckedAt, now)}` : null,
     job.webhookToken ? "Webhook on" : null,
     job.approveRuns ? "Runs wait for approval" : null,
-    `${AGENT_LABELS[job.effectiveAgent]} on ${job.baseRef}`,
+    `${agentLabel(job.effectiveAgent)} on ${job.baseRef}`,
   ].filter(Boolean);
   return (
     <section className="grid gap-3">

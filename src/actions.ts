@@ -1,4 +1,4 @@
-import { AGENT_IDS, isAgentId } from "./agents.ts";
+import { isBuiltinAgent } from "./agents.ts";
 import type { ChatAction, Job, Run, Settings, Store } from "./store.ts";
 
 /**
@@ -38,6 +38,8 @@ const JOB_FIELDS = [
   "watchCommand",
   "approveRuns",
   "shipCommand",
+  "releaseInstructions",
+  "autoRelease",
   "enabled",
 ] as const;
 type JobField = (typeof JOB_FIELDS)[number];
@@ -48,6 +50,8 @@ const RISKY_JOB_FIELDS: ReadonlySet<JobField> = new Set([
   "checkCommand",
   "watchCommand",
   "shipCommand",
+  "releaseInstructions",
+  "autoRelease",
   "pushBranch",
   "webhookEnabled",
 ]);
@@ -113,6 +117,8 @@ export function jobBody(job: Job): Record<JobField, unknown> {
     watchCommand: job.watchCommand ?? "",
     approveRuns: job.approveRuns,
     shipCommand: job.shipCommand ?? "",
+    releaseInstructions: job.releaseInstructions ?? "",
+    autoRelease: job.autoRelease,
     enabled: job.enabled,
   };
 }
@@ -123,8 +129,8 @@ function jobFields(value: unknown, name: string): Partial<Record<JobField, unkno
   const unknown = Object.keys(value).filter((key) => !(JOB_FIELDS as readonly string[]).includes(key));
   if (unknown.length > 0) throw new ActionError(`Unknown job field${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
   const fields = value as Partial<Record<JobField, unknown>>;
-  if (fields.agent !== undefined && fields.agent !== null && !isAgentId(fields.agent)) {
-    throw new ActionError(`agent must be null (the default) or one of ${AGENT_IDS.join(", ")}`);
+  if (fields.agent !== undefined && fields.agent !== null && typeof fields.agent !== "string") {
+    throw new ActionError("agent must be null (the default) or the name of an agent in Settings");
   }
   return fields;
 }
@@ -158,7 +164,7 @@ function settingsChanges(args: Record<string, unknown>, settings: Settings) {
   const next = structuredClone(settingsBody(settings)) as ReturnType<typeof settingsBody>;
   const changes: ChatAction["changes"] = [];
   if (defaultAgent !== undefined) {
-    if (!isAgentId(defaultAgent)) throw new ActionError(`defaultAgent must be one of ${AGENT_IDS.join(", ")}`);
+    if (typeof defaultAgent !== "string") throw new ActionError("defaultAgent must be the name of an agent");
     if (defaultAgent !== settings.defaultAgent) changes.push({ field: "defaultAgent", before: settings.defaultAgent, after: defaultAgent });
     next.defaultAgent = defaultAgent;
   }
@@ -167,12 +173,19 @@ function settingsChanges(args: Record<string, unknown>, settings: Settings) {
     next.maxConcurrent = maxConcurrent as number;
   }
   if (agents !== undefined) {
-    if (!agents || typeof agents !== "object" || Array.isArray(agents)) throw new ActionError("agents must map agent ids to {command}");
+    if (!agents || typeof agents !== "object" || Array.isArray(agents)) throw new ActionError("agents must map agent ids to {command} (or null to remove one)");
     for (const [id, entry] of Object.entries(agents)) {
-      if (!isAgentId(id)) throw new ActionError(`Unknown agent: ${id}`);
-      const command = (entry as { command?: unknown } | null)?.command;
+      const before = Object.hasOwn(settings.agents, id) ? settings.agents[id]!.command : null;
+      if (entry === null) {
+        if (isBuiltinAgent(id)) throw new ActionError(`The built-in agent ${id} can't be removed`);
+        if (before === null) throw new ActionError(`There is no agent named ${id}`);
+        changes.push({ field: `agents.${id}`, before, after: null });
+        delete next.agents[id];
+        continue;
+      }
+      const command = (entry as { command?: unknown }).command;
       if (typeof command !== "string") throw new ActionError(`agents.${id}.command must be a string`);
-      if (command !== settings.agents[id].command) changes.push({ field: `agents.${id}.command`, before: settings.agents[id].command, after: command });
+      if (command !== before) changes.push({ field: `agents.${id}.command`, before, after: command });
       next.agents[id] = { command };
     }
   }
@@ -311,20 +324,22 @@ const DEFINITIONS: Record<string, Definition> = {
     outcome: (response) => ({ text: `Run #${(response as Run).id}: ${(response as Run).status}` }),
   },
   ship: {
-    help: `ship {"runId"}: run the job's ship command on the item's result (any run of the item).`,
+    help: `ship {"runId"}: release the item's result (any run of the item): the job's agent follows its release instructions, or its ship command runs.`,
     plan(args, store) {
       const run = findRun(args, store);
       const job = store.getJob(run.jobId);
-      if (!job?.shipCommand) throw new ActionError("This job has no ship command");
+      if (!job?.releaseInstructions && !job?.shipCommand) throw new ActionError("This job has no release instructions or ship command");
       return {
-        title: `Ship ${runLabel(run, store)}'s item`,
-        changes: [{ field: "shipCommand", before: null, after: job.shipCommand }],
+        title: `Release ${runLabel(run, store)}'s item`,
+        changes: job.releaseInstructions
+          ? [{ field: "releaseInstructions", before: null, after: job.releaseInstructions }]
+          : [{ field: "shipCommand", before: null, after: job.shipCommand }],
         risky: true,
         basis: job.updatedAt,
       };
     },
     request: (args, store) => ({ method: "POST", path: `/api/runs/${findRun(args, store).id}/ship` }),
-    outcome: (response) => ({ text: `Started ship run #${(response as Run).id}` }),
+    outcome: (response) => ({ text: `Started release run #${(response as Run).id}` }),
   },
   close_item: {
     help: `close_item {"runId", "closed": true | false}: close an item without merging, or reopen it.`,
@@ -352,7 +367,7 @@ const DEFINITIONS: Record<string, Definition> = {
     outcome: (_response, args) => ({ text: boolArg(args, "replied", true) ? "Marked replied" : "Marked not replied" }),
   },
   update_settings: {
-    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "agents"?: {"pi"|"claude"|"codex": {"command"}}}}: change Settings.`,
+    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "agents"?: {"<agent id>": {"command"} | null}}}: change Settings. Agents are pi, claude, codex and any added by name (another Pi launcher such as "pi-claude"); a new name adds one, null removes an added one.`,
     plan(args, store) {
       const settings = store.getSettings();
       const { changes } = settingsChanges(args, settings);

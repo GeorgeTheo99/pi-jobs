@@ -1,14 +1,19 @@
-export type AgentId = "pi" | "claude" | "codex";
+/** A built-in agent (pi, claude, codex) or one added in Settings by name, such as "pi-claude". */
+export type AgentId = string;
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
  * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
- * ship run runs the job's ship command (no agent) on the item's result.
+ * ship run runs the job's ship command (no agent) on the item's result; a release run has the agent
+ * release it by the job's release instructions.
  */
-export type RunMode = "change" | "ask" | "ship";
+export type RunMode = "change" | "ask" | "ship" | "release";
+/** Runs that ship an item: its ship command, or its agent releasing it. */
+export const isShipMode = (mode: RunMode) => mode === "ship" || mode === "release";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
-export const AGENT_LABELS: Record<AgentId, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
-export const AGENT_IDS = Object.keys(AGENT_LABELS) as AgentId[];
+const BUILTIN_LABELS: Record<string, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
+/** A built-in agent's label, or an added agent's name. */
+export const agentLabel = (id: AgentId): string => (Object.hasOwn(BUILTIN_LABELS, id) ? BUILTIN_LABELS[id]! : id);
 export const TRIGGER_LABELS: Record<Trigger, string> = {
   manual: "Manual",
   schedule: "Schedule",
@@ -79,6 +84,10 @@ export interface Job {
   approveRuns: boolean;
   /** What Ship runs on an item's result; null when the job can't ship. */
   shipCommand: string | null;
+  /** What the agent follows to release an item's result; null when it doesn't. */
+  releaseInstructions: string | null;
+  /** Release each result that succeeds with changes, without waiting for the owner. */
+  autoRelease: boolean;
   enabled: boolean;
   lastFiredAt: string | null;
   watchCheckedAt: string | null;
@@ -107,6 +116,8 @@ export interface JobDraft {
   watchCommand: string;
   approveRuns: boolean;
   shipCommand: string;
+  releaseInstructions: string;
+  autoRelease: boolean;
   enabled: boolean;
 }
 
@@ -189,7 +200,8 @@ export interface Settings {
   defaultAgent: AgentId;
   agents: Record<AgentId, { command: string }>;
   maxConcurrent: number;
-  agentInfo: { id: AgentId; label: string; preset: string; executable: string | null }[];
+  /** Every agent in `agents`, in order: built-ins first. */
+  agentInfo: { id: AgentId; label: string; builtin: boolean; preset: string | null; executable: string | null; sessions: boolean }[];
 }
 
 export interface LogChunk {
@@ -292,7 +304,7 @@ export const api = {
   chats: () => request<ChatSummary[]>("GET", "/api/chats"),
   chat: (id: number) => request<ChatWithTurns>("GET", `/api/chats/${id}`),
   /** Starts a chat, optionally about a job or an item (any of its runs), with its first message. */
-  createChat: (message: string, about: { jobId?: number; runId?: number } = {}) =>
+  createChat: (message: string, about: { jobId?: number; runId?: number; agent?: AgentId } = {}) =>
     request<ChatWithTurns>("POST", "/api/chats", { message, ...about }),
   sendChat: (id: number, message: string) => request<ChatWithTurns>("POST", `/api/chats/${id}/messages`, { message }),
   cancelChat: (id: number) => request<ChatWithTurns>("POST", `/api/chats/${id}/cancel`),
@@ -327,6 +339,8 @@ export function jobToDraft(job: Job): JobDraft {
     watchCommand: job.watchCommand ?? "",
     approveRuns: job.approveRuns,
     shipCommand: job.shipCommand ?? "",
+    releaseInstructions: job.releaseInstructions ?? "",
+    autoRelease: job.autoRelease,
     enabled: job.enabled,
   };
 }

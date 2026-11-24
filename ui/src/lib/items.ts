@@ -1,4 +1,4 @@
-import type { Run } from "./api";
+import { isShipMode, type Job, type Run } from "./api";
 import { summarizePayload } from "./format";
 import { parseVerdict, type Verdict } from "./report";
 
@@ -86,7 +86,7 @@ const isOpen = (run: Run) => run.status === "awaiting_approval" || run.status ==
 function stateOf(runs: Run[], latestWork: Run, verdict: Verdict, withChanges: Run | null): ItemState {
   if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
   if (runs.some(isOpen)) return "running";
-  if (latestWork.mode === "ship" && latestWork.status === "succeeded") return "shipped";
+  if (isShipMode(latestWork.mode) && latestWork.status === "succeeded") return "shipped";
   if (withChanges?.merged) return "merged";
   if (latestWork.closedAt !== null) return "closed";
   if (latestWork.status === "failed" || latestWork.status === "timed_out") return "failed";
@@ -118,12 +118,13 @@ export function itemFields(run: Run): { reference: string | null; kind: string |
 }
 
 /**
- * Whether Ship can run on the item now: the job has a ship command, nothing is running, the item has
- * changes, and its newest work succeeded (or was a ship, which the owner may run again).
+ * Whether the item can be released now: the job has release instructions or a ship command, nothing
+ * is running, the item has changes, and its newest work succeeded (or was a release, which the owner
+ * may run again).
  */
-export function canShip(item: Item, shipCommand: string | null | undefined): boolean {
-  if (!shipCommand || item.runs.some(isOpen) || !item.withChanges) return false;
-  return item.latestWork.status === "succeeded" || item.latestWork.mode === "ship";
+export function canShip(item: Item, job: Pick<Job, "shipCommand" | "releaseInstructions"> | null | undefined): boolean {
+  if ((!job?.shipCommand && !job?.releaseInstructions) || item.runs.some(isOpen) || !item.withChanges) return false;
+  return item.latestWork.status === "succeeded" || isShipMode(item.latestWork.mode);
 }
 
 /** The run an item's link opens: the one waiting or running, else the newest finished one. */

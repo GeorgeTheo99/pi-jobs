@@ -1,6 +1,6 @@
 import { GitBranch } from "lucide-react";
 import { Link } from "react-router-dom";
-import { AGENT_LABELS, TRIGGER_LABELS, type Run } from "@/lib/api";
+import { agentLabel, TRIGGER_LABELS, type Run } from "@/lib/api";
 import { duration, relativeTime, summarizePayload } from "@/lib/format";
 import { useNow } from "@/lib/usePoll";
 import { StatusPill } from "./ui";
@@ -32,8 +32,8 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
                 </div>
                 <div className="truncate text-[12px] text-fog">
                   {!titledByTrigger && `${TRIGGER_LABELS[run.trigger]} · `}
-                  {AGENT_LABELS[run.agent]} · {relativeTime(run.createdAt, now)}
-                  {run.followUpOf !== null && ` · ${run.mode === "ask" ? "question" : run.mode === "ship" ? "ship" : "follow-up"} after #${run.followUpOf}`}
+                  {agentLabel(run.agent)} · {relativeTime(run.createdAt, now)}
+                  {run.followUpOf !== null && ` · ${run.mode === "ask" ? "question" : run.mode === "ship" ? "ship" : run.mode === "release" ? "release" : "follow-up"} after #${run.followUpOf}`}
                   {run.attempt > 1 && ` · attempt ${run.attempt}`}
                   {compact && (run.commits ?? 0) > 0 && <span className="text-bone"> · +{run.commits}</span>}
                 </div>

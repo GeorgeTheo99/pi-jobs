@@ -28,7 +28,7 @@ export function setup() {
   const runner = new Runner({ store, stateDir: path.join(root, "state"), killGraceMs: 500, retryDelayMs: 100 });
   const useFakeAgent = (mode: string) => {
     const settings = store.getSettings();
-    settings.agents.pi.command = `${process.execPath} ${FAKE_AGENT} ${mode} {prompt}`;
+    settings.agents.pi!.command = `${process.execPath} ${FAKE_AGENT} ${mode} {prompt}`;
     store.saveSettings(settings);
   };
   const jobInput = (overrides: Partial<JobInput> = {}): JobInput => ({
@@ -46,6 +46,8 @@ export function setup() {
     watchCommand: null,
     approveRuns: false,
     shipCommand: null,
+    releaseInstructions: null,
+    autoRelease: false,
     enabled: true,
     ...overrides,
   });

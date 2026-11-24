@@ -25,6 +25,18 @@ switch (mode) {
     execFileSync("git", ["add", "committed.txt"]);
     execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@example.com", "commit", "-qm", "agent commit"]);
     break;
+  case "release":
+    // Like a release: a version bump, pushed onto main; what it was told and given goes to the record file.
+    writeFileSync(pidFile, JSON.stringify({ prompt, commit: process.env.PI_JOBS_SHIP_COMMIT, branch: process.env.PI_JOBS_SHIP_BRANCH }));
+    writeFileSync("VERSION", "2\n");
+    execFileSync("git", ["add", "VERSION"]);
+    execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@example.com", "commit", "-qm", "Release 2"]);
+    execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
+    console.log("Released\nversion 2 is on main");
+    break;
+  case "not-released":
+    console.log("**Not released**\nThe tests failed, so I stopped before pushing.");
+    break;
   case "fail":
     writeFileSync("partial.txt", "half done\n");
     process.exit(3);

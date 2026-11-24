@@ -2,8 +2,13 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
-export const AGENT_IDS = ["pi", "claude", "codex"] as const;
-export type AgentId = (typeof AGENT_IDS)[number];
+/** The agents pi-jobs knows out of the box; Settings can add more (another Pi launcher, say). */
+export const BUILTIN_AGENT_IDS = ["pi", "claude", "codex"] as const;
+export type BuiltinAgentId = (typeof BUILTIN_AGENT_IDS)[number];
+/** A built-in agent's id, or the name of one added in Settings, such as "pi-claude". */
+export type AgentId = string;
+/** Names for agents added in Settings: lowercase letters, digits and dashes, like a command name. */
+export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 
 export const PROMPT_TOKEN = "{prompt}";
 
@@ -11,7 +16,7 @@ export const PROMPT_TOKEN = "{prompt}";
  * Headless command lines for each agent. Every agent runs unattended as the owner,
  * so each preset turns off interactive approval prompts.
  */
-export const AGENT_PRESETS: Record<AgentId, { label: string; command: string }> = {
+export const AGENT_PRESETS: Record<BuiltinAgentId, { label: string; command: string }> = {
   pi: { label: "Pi", command: "pi -p {prompt}" },
   claude: {
     label: "Claude Code",
@@ -21,8 +26,13 @@ export const AGENT_PRESETS: Record<AgentId, { label: string; command: string }> 
   codex: { label: "Codex", command: "codex exec --sandbox workspace-write {prompt}" },
 };
 
-export function isAgentId(value: unknown): value is AgentId {
-  return typeof value === "string" && (AGENT_IDS as readonly string[]).includes(value);
+export function isBuiltinAgent(value: unknown): value is BuiltinAgentId {
+  return typeof value === "string" && (BUILTIN_AGENT_IDS as readonly string[]).includes(value);
+}
+
+/** What the UI and reports call an agent: a built-in's label, or an added agent's name. */
+export function agentLabel(id: AgentId): string {
+  return isBuiltinAgent(id) ? AGENT_PRESETS[id].label : id;
 }
 
 /** Splits a command line like a POSIX shell would, without expansion. */
@@ -82,14 +92,19 @@ export function commandProgram(argv: string[]): string {
   return first;
 }
 
+/** Pi itself, or a Pi launcher that passes its arguments on to Pi (`pi-claude`, say). */
+function isPiProgram(program: string): boolean {
+  return /^pi(-[\w.-]+)?$/.test(path.basename(program));
+}
+
 /**
- * Whether a command runs an agent whose sessions pi-jobs can name and resume. Pi's `--session-id`
- * opens the session with that ID in the working directory, creating it the first time, so an
- * item's runs, which share a working directory, continue one conversation.
+ * Whether a command runs an agent whose sessions pi-jobs can name and resume: Pi, or a launcher named
+ * `pi-…`. Pi's `--session-id` opens the session with that ID in the working directory, creating it
+ * the first time, so an item's runs, which share a working directory, continue one conversation.
  */
 export function supportsSessions(command: string): boolean {
   try {
-    return path.basename(commandProgram(splitCommand(command))) === "pi";
+    return isPiProgram(commandProgram(splitCommand(command)));
   } catch {
     return false;
   }
@@ -99,7 +114,7 @@ export function supportsSessions(command: string): boolean {
 export function withSession(argv: string[], sessionId: string | null): string[] {
   if (!sessionId) return argv;
   const program = commandProgram(argv);
-  if (path.basename(program) !== "pi") return argv;
+  if (!isPiProgram(program)) return argv;
   const index = argv.indexOf(program);
   return [...argv.slice(0, index + 1), "--session-id", sessionId, ...argv.slice(index + 1)];
 }

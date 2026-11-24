@@ -2,14 +2,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { AGENT_IDS, AGENT_PRESETS, isAgentId, type AgentId } from "./agents.ts";
+import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, type AgentId } from "./agents.ts";
 
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
  * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
- * ship run runs the job's ship command (no agent) on the item's result.
+ * ship run runs the job's ship command (no agent) on the item's result; a release run has the agent
+ * ship it by following the job's release instructions.
  */
-export type RunMode = "change" | "ask" | "ship";
+export type RunMode = "change" | "ask" | "ship" | "release";
+/** Runs that ship an item, with the job's ship command or its agent. */
+export const SHIP_MODES: readonly RunMode[] = ["ship", "release"];
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 /** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
@@ -45,6 +48,13 @@ export interface JobInput {
    * repository's own script does). pi-jobs never runs it by itself.
    */
   shipCommand: string | null;
+  /**
+   * Instructions for the agent to release an item's result (merge, push, deploy, publish), in place of
+   * a ship command. The agent may push in that run only; the owner starts it, or autoRelease does.
+   */
+  releaseInstructions: string | null;
+  /** Ship an item as soon as a run of it succeeds with changes, without waiting for the owner. */
+  autoRelease: boolean;
   enabled: boolean;
 }
 
@@ -165,13 +175,14 @@ export type ChatTurnPatch = Partial<Pick<ChatTurn, "reply" | "actions" | "status
 
 export interface Settings {
   defaultAgent: AgentId;
+  /** The built-in agents (pi, claude, codex) first, then any added in Settings, by id. */
   agents: Record<AgentId, { command: string }>;
   maxConcurrent: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   defaultAgent: "pi",
-  agents: Object.fromEntries(AGENT_IDS.map((id) => [id, { command: AGENT_PRESETS[id].command }])) as Settings["agents"],
+  agents: Object.fromEntries(BUILTIN_AGENT_IDS.map((id) => [id, { command: AGENT_PRESETS[id].command }])),
   maxConcurrent: 2,
 };
 
@@ -282,6 +293,8 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["runs", "item_id", "INTEGER"],
   ["runs", "session_id", "TEXT"],
   ["jobs", "ship_command", "TEXT"],
+  ["jobs", "release_instructions", "TEXT"],
+  ["jobs", "auto_release", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -330,7 +343,7 @@ function toJob(row: Row): Job {
     repoPath: String(row.repo_path),
     baseRef: String(row.base_ref),
     prompt: String(row.prompt),
-    agent: isAgentId(row.agent) ? row.agent : null,
+    agent: typeof row.agent === "string" && row.agent ? row.agent : null,
     schedule: (row.schedule as string | null) ?? null,
     webhookToken: (row.webhook_token as string | null) ?? null,
     timeoutMinutes: Number(row.timeout_minutes),
@@ -340,6 +353,8 @@ function toJob(row: Row): Job {
     retries: Number(row.retries),
     watchCommand: (row.watch_command as string | null) ?? null,
     shipCommand: (row.ship_command as string | null) ?? null,
+    releaseInstructions: (row.release_instructions as string | null) ?? null,
+    autoRelease: row.auto_release === 1,
     approveRuns: row.approve_runs === 1,
     enabled: row.enabled === 1,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
@@ -394,7 +409,7 @@ function toRun(row: Row): Run {
     followUpOf: num(row.follow_up_of),
     instructions: (row.instructions as string | null) ?? null,
     summary: (row.summary as string | null) ?? null,
-    mode: row.mode === "ask" || row.mode === "ship" ? row.mode : "change",
+    mode: row.mode === "ask" || row.mode === "ship" || row.mode === "release" ? row.mode : "change",
     itemId: Number(row.item_id ?? row.id),
     sessionId: (row.session_id as string | null) ?? null,
     repliedAt: (row.replied_at as string | null) ?? null,
@@ -543,8 +558,8 @@ export class Store {
       .prepare(
         `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
            timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, ship_command,
-           enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           release_instructions, auto_release, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -562,6 +577,8 @@ export class Store {
         input.watchCommand,
         input.approveRuns ? 1 : 0,
         input.shipCommand,
+        input.releaseInstructions,
+        input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         ts,
         ts,
@@ -574,7 +591,8 @@ export class Store {
       .prepare(
         `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
-           watch_command = ?, approve_runs = ?, ship_command = ?, enabled = ?, updated_at = ?
+           watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, auto_release = ?, enabled = ?,
+           updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -593,6 +611,8 @@ export class Store {
         input.watchCommand,
         input.approveRuns ? 1 : 0,
         input.shipCommand,
+        input.releaseInstructions,
+        input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         now(),
         id,
@@ -666,16 +686,18 @@ export class Store {
   }
 
   /**
-   * Queues a ship run on `of`'s item: the job's ship command, recorded as the run's instructions. It
-   * carries the item's agent session on, so the agent's next follow-up continues that conversation.
+   * Queues a ship run on `of`'s item: the job's ship command (mode "ship") or release instructions
+   * (mode "release"), recorded as the run's instructions. A ship command's run carries the item's agent
+   * session on, so the agent's next follow-up continues that conversation; a release run picks its
+   * session when it starts, like a follow-up.
    */
-  createShip(of: Run, agent: AgentId, command: string): Run {
+  createShip(of: Run, agent: AgentId, instructions: string, mode: "ship" | "release" = "ship"): Run {
     const result = this.db
       .prepare(
         `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, item_id, session_id, created_at)
-         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, 'ship', ?, ?, ?)`,
+         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(of.jobId, agent, of.payload, of.id, command, of.itemId, of.sessionId, now());
+      .run(of.jobId, agent, of.payload, of.id, instructions, mode, of.itemId, mode === "ship" ? of.sessionId : null, now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
@@ -838,11 +860,14 @@ export class Store {
     const row = this.db.prepare("SELECT value FROM settings WHERE key = 'settings'").get() as { value: string } | undefined;
     if (!row) return structuredClone(DEFAULT_SETTINGS);
     const saved = JSON.parse(row.value) as Partial<Settings>;
+    const agents: Settings["agents"] = {};
+    for (const id of BUILTIN_AGENT_IDS) agents[id] = { command: saved.agents?.[id]?.command ?? DEFAULT_SETTINGS.agents[id]!.command };
+    for (const [id, entry] of Object.entries(saved.agents ?? {})) {
+      if (!Object.hasOwn(agents, id) && AGENT_ID_PATTERN.test(id) && typeof entry?.command === "string") agents[id] = { command: entry.command };
+    }
     return {
-      defaultAgent: isAgentId(saved.defaultAgent) ? saved.defaultAgent : DEFAULT_SETTINGS.defaultAgent,
-      agents: Object.fromEntries(
-        AGENT_IDS.map((id) => [id, { command: saved.agents?.[id]?.command ?? DEFAULT_SETTINGS.agents[id].command }]),
-      ) as Settings["agents"],
+      defaultAgent: typeof saved.defaultAgent === "string" && Object.hasOwn(agents, saved.defaultAgent) ? saved.defaultAgent : DEFAULT_SETTINGS.defaultAgent,
+      agents,
       maxConcurrent: saved.maxConcurrent ?? DEFAULT_SETTINGS.maxConcurrent,
     };
   }

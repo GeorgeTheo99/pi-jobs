@@ -89,6 +89,8 @@ function jobState(job: Job, store: Store, nextRun: ChatRunnerOptions["nextRun"],
     watchCommand: job.watchCommand,
     approveRuns: job.approveRuns,
     shipCommand: job.shipCommand,
+    releaseInstructions: full ? job.releaseInstructions : job.releaseInstructions && truncate(job.releaseInstructions, MAX_JOB_PROMPT),
+    autoRelease: job.autoRelease,
     lastRun: last ? { id: last.id, status: last.status } : null,
     prompt: full ? job.prompt : truncate(job.prompt, MAX_JOB_PROMPT),
   };
@@ -290,7 +292,9 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
     try {
       const cwd = this.chatDir(chat.id);
       mkdirSync(cwd, { recursive: true });
-      const { command } = this.store.getSettings().agents[chat.agent];
+      const settings = this.store.getSettings();
+      // A chat whose agent was since removed from Settings carries on with the default one.
+      const { command } = settings.agents[Object.hasOwn(settings.agents, chat.agent) ? chat.agent : settings.defaultAgent]!;
       const earlier = this.store.chatTurns(chat.id).filter((t) => t.id < turn.id);
       const sessionId = supportsSessions(command) ? chat.sessionId : null;
       const resumed = sessionId !== null && earlier.some((t) => t.exitCode !== null);

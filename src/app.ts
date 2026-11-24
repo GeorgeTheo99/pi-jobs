@@ -5,7 +5,7 @@ import { open, readFile, rm, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { AGENT_IDS, AGENT_PRESETS, buildArgv, commandProgram, isAgentId, resolveExecutable } from "./agents.ts";
+import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, agentLabel, buildArgv, commandProgram, isBuiltinAgent, resolveExecutable, supportsSessions } from "./agents.ts";
 import { applyAction, type CallApi } from "./actions.ts";
 import { ChatBusyError, type ChatRunner } from "./chat.ts";
 import type { Config } from "./config.ts";
@@ -83,14 +83,15 @@ export function createApp(deps: AppDeps) {
   const settingsView = async (settings: Settings) => ({
     ...settings,
     agentInfo: await Promise.all(
-      AGENT_IDS.map(async (id) => {
+      Object.entries(settings.agents).map(async ([id, { command }]) => {
         let executable: string | null = null;
         try {
-          executable = await resolveExecutable(commandProgram(buildArgv(settings.agents[id].command, "")), envPath);
+          executable = await resolveExecutable(commandProgram(buildArgv(command, "")), envPath);
         } catch {
           // Invalid commands are reported as unavailable.
         }
-        return { id, label: AGENT_PRESETS[id].label, preset: AGENT_PRESETS[id].command, executable };
+        const builtin = isBuiltinAgent(id);
+        return { id, label: agentLabel(id), builtin, preset: builtin ? AGENT_PRESETS[id].command : null, executable, sessions: supportsSessions(command) };
       }),
     ),
   });
@@ -199,7 +200,7 @@ export function createApp(deps: AppDeps) {
       /^\/api\/jobs$/,
       async (req) => {
         const body = await readJson(req);
-        const input = await validateJob(body);
+        const input = await validateJob(body, store.getSettings());
         const job = store.createJob(input, body.webhookEnabled === true ? newToken() : null);
         scheduler.sync(job);
         return jobView(job);
@@ -212,7 +213,7 @@ export function createApp(deps: AppDeps) {
       async (req, [id]) => {
         const existing = findJob(id);
         const body = await readJson(req);
-        const input = await validateJob(body, existing);
+        const input = await validateJob(body, store.getSettings(), existing);
         const token =
           body.webhookEnabled === undefined
             ? existing.webhookToken
@@ -427,7 +428,7 @@ export function createApp(deps: AppDeps) {
       "PUT",
       /^\/api\/settings$/,
       async (req) => {
-        const saved = store.saveSettings(validateSettings(await readJson(req)));
+        const saved = store.saveSettings(validateSettings(await readJson(req), store.getSettings(), store.listJobs()));
         runner.pump();
         return settingsView(saved);
       },
@@ -452,8 +453,8 @@ export function createApp(deps: AppDeps) {
         const runId = body.runId == null ? null : (store.getRun(Number(body.runId))?.id ?? null);
         if (body.runId != null && runId === null) throw new HttpError(404, "Run not found");
         const settings = store.getSettings();
-        const agent = body.agent === undefined ? settings.defaultAgent : body.agent;
-        if (!isAgentId(agent)) throw new HttpError(400, "Fix the highlighted fields", { agent: "Unknown agent" });
+        const agent = body.agent == null ? settings.defaultAgent : body.agent;
+        if (typeof agent !== "string" || !Object.hasOwn(settings.agents, agent)) throw new HttpError(400, "Fix the highlighted fields", { agent: "Unknown agent" });
         const line = message.split("\n")[0]!.trim();
         const title = line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line;
         const chat = store.createChat({ title, jobId, runId, agent, sessionId: randomUUID() });
@@ -630,7 +631,7 @@ export function createApp(deps: AppDeps) {
 }
 
 /** Builds a job from a request body; for an update, omitted catch-up and retry settings keep their values. */
-async function validateJob(body: Record<string, unknown>, existing: Job | null = null): Promise<JobInput> {
+async function validateJob(body: Record<string, unknown>, settings: Settings, existing: Job | null = null): Promise<JobInput> {
   const fields: Record<string, string> = {};
   const text = (key: string) => (typeof body[key] === "string" ? (body[key] as string).trim() : "");
 
@@ -651,7 +652,10 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
   if (!prompt) fields.prompt = "Tell the agent what to do";
 
   const agent = body.agent ?? null;
-  if (agent !== null && !isAgentId(agent)) fields.agent = "Unknown agent";
+  // A job keeps an agent that was since removed from Settings until it is changed; its runs say so.
+  if (agent !== null && (typeof agent !== "string" || (!Object.hasOwn(settings.agents, agent) && agent !== existing?.agent))) {
+    fields.agent = `Choose one of ${Object.keys(settings.agents).join(", ")}, or the default`;
+  }
 
   const schedule = text("schedule") || null;
   const scheduleError = schedule ? cronError(schedule) : null;
@@ -669,6 +673,18 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
   // Like the watch command: older clients leave it out, and their updates keep the job's.
   const shipCommand = body.shipCommand === undefined ? (existing?.shipCommand ?? null) : text("shipCommand") || null;
   if (shipCommand && shipCommand.length > 4000) fields.shipCommand = "Keep the ship command under 4,000 characters";
+
+  // Like the ship command: older clients leave these out, and their updates keep the job's.
+  const releaseInstructions =
+    body.releaseInstructions === undefined ? (existing?.releaseInstructions ?? null) : text("releaseInstructions") || null;
+  if (releaseInstructions && releaseInstructions.length > MAX_INSTRUCTIONS) {
+    fields.releaseInstructions = `Keep the release instructions under ${MAX_INSTRUCTIONS.toLocaleString("en-US")} characters`;
+  }
+  if (releaseInstructions && shipCommand) {
+    fields.releaseInstructions = "Use release instructions or a ship command, not both (the instructions can say to run the command)";
+  }
+  const autoRelease = typeof body.autoRelease === "boolean" ? body.autoRelease : (existing?.autoRelease ?? false);
+  if (autoRelease && !releaseInstructions && !shipCommand) fields.autoRelease = "Add release instructions or a ship command first";
 
   const retries = Number(body.retries ?? existing?.retries ?? DEFAULT_RETRIES);
   if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {
@@ -691,17 +707,28 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
     watchCommand,
     approveRuns: typeof body.approveRuns === "boolean" ? body.approveRuns : (existing?.approveRuns ?? false),
     shipCommand,
+    releaseInstructions,
+    autoRelease,
     enabled: body.enabled !== false,
   };
 }
 
-function validateSettings(body: Record<string, unknown>): Settings {
+/**
+ * Settings from a request body. The built-in agents are always there; others are added by naming them
+ * and removed by leaving them out, unless a job still uses them.
+ */
+function validateSettings(body: Record<string, unknown>, current: Settings, jobs: Job[]): Settings {
   const fields: Record<string, string> = {};
-  if (!isAgentId(body.defaultAgent)) fields.defaultAgent = "Choose Pi, Claude Code, or Codex";
-  const agentsBody = (body.agents ?? {}) as Record<string, { command?: unknown } | undefined>;
-  const agents = {} as Settings["agents"];
-  for (const id of AGENT_IDS) {
-    const command = typeof agentsBody[id]?.command === "string" ? (agentsBody[id]!.command as string).trim() : "";
+  const agentsBody = body.agents && typeof body.agents === "object" && !Array.isArray(body.agents) ? (body.agents as Record<string, unknown>) : {};
+  const agents: Settings["agents"] = {};
+  const ids = [...BUILTIN_AGENT_IDS, ...Object.keys(agentsBody).filter((id) => !isBuiltinAgent(id))];
+  for (const id of ids) {
+    if (!AGENT_ID_PATTERN.test(id)) {
+      fields[`agents.${id}`] = "Name it with lowercase letters, digits and dashes (up to 32), starting with a letter";
+      continue;
+    }
+    const entry = agentsBody[id] as { command?: unknown } | undefined;
+    const command = typeof entry?.command === "string" ? entry.command.trim() : "";
     try {
       buildArgv(command, "");
     } catch (error) {
@@ -709,12 +736,18 @@ function validateSettings(body: Record<string, unknown>): Settings {
     }
     agents[id] = { command };
   }
+  for (const job of jobs) {
+    if (job.agent && Object.hasOwn(current.agents, job.agent) && !Object.hasOwn(agents, job.agent)) {
+      fields[`agents.${job.agent}`] = `Job #${job.id} "${job.name}" uses this agent; change its agent first`;
+    }
+  }
+  if (typeof body.defaultAgent !== "string" || !Object.hasOwn(agents, body.defaultAgent)) fields.defaultAgent = "Choose one of the agents";
   const maxConcurrent = Number(body.maxConcurrent);
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 8) {
     fields.maxConcurrent = "Use a whole number from 1 to 8";
   }
   if (Object.keys(fields).length > 0) throw new HttpError(400, "Fix the highlighted fields", fields);
-  return { defaultAgent: body.defaultAgent as Settings["defaultAgent"], agents, maxConcurrent };
+  return { defaultAgent: body.defaultAgent as string, agents, maxConcurrent };
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {

@@ -1,6 +1,6 @@
 import { Check, Copy, LoaderCircle } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { AGENT_LABELS, type AgentId, type RunStatus } from "@/lib/api";
+import { agentLabel, type AgentId, type RunStatus } from "@/lib/api";
 
 const STATUS_STYLES: Record<RunStatus, { label: string; className: string }> = {
   awaiting_approval: { label: "Needs approval", className: "border-amber/45 text-amber" },
@@ -31,7 +31,7 @@ export function StatusPill({ status }: { status: RunStatus }) {
 export function AgentBadge({ agent, inherited = false }: { agent: AgentId; inherited?: boolean }) {
   return (
     <span className="control-label inline-flex items-center rounded-full border border-steel/60 px-2.5 py-[3px] whitespace-nowrap text-bone">
-      {AGENT_LABELS[agent]}
+      {agentLabel(agent)}
       {inherited && <span className="ml-1 font-semibold text-fog">· default</span>}
     </span>
   );

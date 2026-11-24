@@ -196,6 +196,49 @@ test("settings validate commands and report availability", async (t) => {
   assert.equal(good.status, 200);
   assert.equal(good.json.defaultAgent, "claude");
   assert.equal(good.json.agentInfo.find((a: { id: string }) => a.id === "codex").executable, "/bin/echo");
+
+  // Another Pi launcher, added by name, can be the default and a job's agent; it can't be removed while a job uses it.
+  const added = await app.call("PUT", "/api/settings", {
+    ...good.json,
+    defaultAgent: "pi-claude",
+    agents: { ...good.json.agents, "pi-claude": { command: "/bin/echo --model x {prompt}" } },
+  });
+  assert.equal(added.status, 200, JSON.stringify(added.json));
+  assert.deepEqual(Object.keys(added.json.agents), ["pi", "claude", "codex", "pi-claude"]);
+  const info = added.json.agentInfo.find((a: { id: string }) => a.id === "pi-claude");
+  assert.deepEqual([info.label, info.builtin, info.preset], ["pi-claude", false, null]);
+  const badName = await app.call("PUT", "/api/settings", { ...added.json, agents: { ...added.json.agents, "Bad Name": { command: "pi" } } });
+  assert.deepEqual(Object.keys(badName.json.fields), ["agents.Bad Name"]);
+  const job = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", agent: "pi-claude" });
+  assert.equal(job.status, 201, JSON.stringify(job.json));
+  assert.equal(job.json.agent, "pi-claude");
+  const unknown = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", agent: "nope" });
+  assert.equal(unknown.json.fields.agent, "Choose one of pi, claude, codex, pi-claude, or the default");
+  const { "pi-claude": _removed, ...builtins } = added.json.agents;
+  const inUse = await app.call("PUT", "/api/settings", { ...added.json, defaultAgent: "pi", agents: builtins });
+  assert.equal(inUse.status, 400);
+  assert.match(inUse.json.fields["agents.pi-claude"], /Job #\d+ "j" uses this agent/);
+  await app.call("PUT", `/api/jobs/${job.json.id}`, { ...job.json, agent: null });
+  const removed = await app.call("PUT", "/api/settings", { ...added.json, defaultAgent: "pi", agents: builtins });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(Object.keys(removed.json.agents), ["pi", "claude", "codex"]);
+});
+
+test("release instructions and ship commands exclude each other; autoRelease needs one", async (t) => {
+  const app = await startApp(t);
+  const base = { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p" };
+  const both = await app.call("POST", "/api/jobs", { ...base, shipCommand: "true", releaseInstructions: "Release it" });
+  assert.equal(both.status, 400);
+  assert.match(both.json.fields.releaseInstructions, /not both/);
+  const lonely = await app.call("POST", "/api/jobs", { ...base, autoRelease: true });
+  assert.match(lonely.json.fields.autoRelease, /release instructions or a ship command first/);
+  const job = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true });
+  assert.equal(job.status, 201);
+  assert.deepEqual([job.json.releaseInstructions, job.json.autoRelease], ["Release it", true]);
+  // Older clients leave both out, and their updates keep them.
+  const { releaseInstructions: _r, autoRelease: _a, ...older } = job.json;
+  const kept = await app.call("PUT", `/api/jobs/${job.json.id}`, older);
+  assert.deepEqual([kept.json.releaseInstructions, kept.json.autoRelease], ["Release it", true]);
 });
 
 test("requests from other hosts, cross-origin writes and form posts are rejected", async (t) => {
@@ -476,5 +519,5 @@ test("ship: the job keeps its ship command across older clients' updates; POST /
   assert.equal(cleared.json.shipCommand, null);
   const refused = await app.call("POST", `/api/runs/${run.id}/ship`, {});
   assert.equal(refused.status, 409);
-  assert.match(refused.json.error, /no ship command/);
+  assert.match(refused.json.error, /no release instructions or ship command/);
 });

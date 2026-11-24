@@ -48,6 +48,9 @@ test("sessions apply to Pi only, right after the program", async () => {
   assert.equal(supportsSessions("env A=1 /opt/bin/pi -p {prompt}"), true);
   assert.equal(supportsSessions(AGENT_PRESETS.claude.command), false);
   assert.equal(supportsSessions('pi "unterminated'), false);
+  assert.equal(supportsSessions("pi-claude -p {prompt}"), true, "a Pi launcher passes its arguments on to Pi");
+  assert.equal(supportsSessions("pipx run x {prompt}"), false);
+  assert.deepEqual(withSession(["pi-claude", "-p", "x"], "s1"), ["pi-claude", "--session-id", "s1", "-p", "x"]);
   assert.deepEqual(withSession(["env", "A=1", "pi", "-p", "x"], "s1"), ["env", "A=1", "pi", "--session-id", "s1", "-p", "x"]);
   assert.deepEqual(withSession(["claude", "-p", "x"], "s1"), ["claude", "-p", "x"]);
   assert.deepEqual(withSession(["pi", "-p", "x"], null), ["pi", "-p", "x"]);

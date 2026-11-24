@@ -2,7 +2,7 @@ import { Check, ChevronRight, CornerDownRight, LoaderCircle } from "lucide-react
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ErrorNote } from "@/components/ui";
-import { AGENT_LABELS, api, type Job } from "@/lib/api";
+import { agentLabel, api, type Job } from "@/lib/api";
 import { relativeTime, repoName } from "@/lib/format";
 import { ITEM_STATE_LABELS, itemFields, itemRun, itemTitle, type Item, type ItemState } from "@/lib/items";
 import { VERDICT_LABELS } from "@/lib/report";
@@ -145,7 +145,7 @@ export function WaitingCard({ item, job, onChanged }: { item: Item; job: Job | u
           {item.state === "approval"
             ? paused
               ? "The job is paused. Resume it to approve."
-              : `${AGENT_LABELS[run.agent]} on ${job ? repoName(job.repoPath) : "the repository"}`
+              : `${agentLabel(run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
             : "Proposal on a branch"}
         </span>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">

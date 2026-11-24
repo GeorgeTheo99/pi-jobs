@@ -24,7 +24,7 @@ async function startApp(t: TestContext, mode = "reply") {
   const { port } = server.address() as AddressInfo;
   const { secret } = ctx.store.createToken("test");
   const settings = ctx.store.getSettings();
-  settings.agents.pi.command = `${process.execPath} ${FAKE_CHAT} ${mode} {prompt}`;
+  settings.agents.pi!.command = `${process.execPath} ${FAKE_CHAT} ${mode} {prompt}`;
   ctx.store.saveSettings(settings);
   t.after(async () => {
     scheduler.stop();
@@ -167,12 +167,22 @@ test("secrets made by an action reach the owner's card only", async (t) => {
         { type: "rotate_webhook_token", jobId: job.id },
         { type: "create_token", name: "mine", token: "hunter2-hunter2" },
         { type: "update_settings", changes: { agents: { claude: { command: "claude -p {prompt}" } }, maxConcurrent: 3 } },
+        { type: "update_settings", changes: { agents: { "pi-claude": { command: "pi-claude -p {prompt}" } }, defaultAgent: "pi-claude" } },
+        { type: "update_settings", changes: { agents: { pi: null } } },
       ]),
     })
   ).json;
   const turn = await app.replied(chat.turns[0].id);
-  assert.deepEqual(turn.actions.map((a) => [a.status, a.risky]), [["proposed", true], ["proposed", true], ["invalid", false], ["proposed", true]]);
+  assert.deepEqual(
+    turn.actions.map((a) => [a.status, a.risky]),
+    [["proposed", true], ["proposed", true], ["invalid", false], ["proposed", true], ["proposed", true], ["invalid", false]],
+  );
   assert.deepEqual(turn.actions[3]!.changes.map((c) => c.field), ["maxConcurrent", "agents.claude.command"]);
+  assert.deepEqual(turn.actions[4]!.changes, [
+    { field: "defaultAgent", before: "pi", after: "pi-claude" },
+    { field: "agents.pi-claude.command", before: null, after: "pi-claude -p {prompt}" },
+  ]);
+  assert.equal(turn.actions[5]!.error, "The built-in agent pi can't be removed");
 
   const url = (index: number) => `/api/chats/${chat.id}/turns/${turn.id}/actions/${index}`;
   const token = await app.call("POST", url(0), { decision: "apply" });
@@ -185,6 +195,8 @@ test("secrets made by an action reach the owner's card only", async (t) => {
   const settings = await app.call("POST", url(3), { decision: "apply" });
   assert.equal(settings.json.action.status, "applied", settings.json.action.error);
   assert.equal(app.store.getSettings().maxConcurrent, 3);
+  const stale = await app.call("POST", url(4), { decision: "apply" });
+  assert.match(stale.json.action.error, /target changed since this was proposed/, "the settings it was planned against changed");
 
   const stored = JSON.stringify((await app.call("GET", `/api/chats/${chat.id}`)).json);
   assert.ok(!stored.includes(token.json.secret) && !stored.includes(rotated), "secrets are never stored with the chat");
@@ -206,7 +218,7 @@ test("one reply at a time per chat; replies can be stopped; failures and deletio
   assert.equal((await app.call("POST", `/api/chats/${chat.id}/cancel`, {})).status, 409);
 
   const settings = app.store.getSettings();
-  settings.agents.pi.command = `${process.execPath} ${FAKE_CHAT} fail {prompt}`;
+  settings.agents.pi!.command = `${process.execPath} ${FAKE_CHAT} fail {prompt}`;
   app.store.saveSettings(settings);
   const next = await app.call("POST", `/api/chats/${chat.id}/messages`, { message: actions([{ type: "run_job", jobId: 1 }]) });
   const failed = await app.replied(next.json.turns[1].id);
@@ -238,7 +250,7 @@ test("with Pi, a chat's turns continue one session and are told what became of t
   );
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = app.store.getSettings();
-  settings.agents.pi.command = `${path.join(bin, "pi")} reply {prompt}`;
+  settings.agents.pi!.command = `${path.join(bin, "pi")} reply {prompt}`;
   app.store.saveSettings(settings);
 
   const job = (await app.call("POST", "/api/jobs", { name: "Paused soon", repoPath: app.repo, prompt: "P" })).json;
