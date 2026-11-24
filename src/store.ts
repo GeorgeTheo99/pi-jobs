@@ -53,6 +53,11 @@ export interface JobInput {
    * a ship command. The agent may push in that run only; the owner starts it, or autoRelease does.
    */
   releaseInstructions: string | null;
+  /**
+   * Shell command run in the repository after a release exits 0 (a health check, say); it must exit 0
+   * too, or the release fails.
+   */
+  verifyCommand: string | null;
   /** Ship an item as soon as a run of it succeeds with changes, without waiting for the owner. */
   autoRelease: boolean;
   enabled: boolean;
@@ -295,6 +300,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "ship_command", "TEXT"],
   ["jobs", "release_instructions", "TEXT"],
   ["jobs", "auto_release", "INTEGER NOT NULL DEFAULT 0"],
+  ["jobs", "verify_command", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -355,6 +361,7 @@ function toJob(row: Row): Job {
     shipCommand: (row.ship_command as string | null) ?? null,
     releaseInstructions: (row.release_instructions as string | null) ?? null,
     autoRelease: row.auto_release === 1,
+    verifyCommand: (row.verify_command as string | null) ?? null,
     approveRuns: row.approve_runs === 1,
     enabled: row.enabled === 1,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
@@ -558,8 +565,8 @@ export class Store {
       .prepare(
         `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
            timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, ship_command,
-           release_instructions, auto_release, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           release_instructions, verify_command, auto_release, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -578,6 +585,7 @@ export class Store {
         input.approveRuns ? 1 : 0,
         input.shipCommand,
         input.releaseInstructions,
+        input.verifyCommand,
         input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         ts,
@@ -591,7 +599,7 @@ export class Store {
       .prepare(
         `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
-           watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, auto_release = ?, enabled = ?,
+           watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, verify_command = ?, auto_release = ?, enabled = ?,
            updated_at = ?
          WHERE id = ?`,
       )
@@ -612,6 +620,7 @@ export class Store {
         input.approveRuns ? 1 : 0,
         input.shipCommand,
         input.releaseInstructions,
+        input.verifyCommand,
         input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         now(),

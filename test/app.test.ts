@@ -224,21 +224,31 @@ test("settings validate commands and report availability", async (t) => {
   assert.deepEqual(Object.keys(removed.json.agents), ["pi", "claude", "codex"]);
 });
 
-test("release instructions and ship commands exclude each other; autoRelease needs one", async (t) => {
+test("release instructions and release scripts exclude each other; autoRelease needs one and a check; updates change only what they send", async (t) => {
   const app = await startApp(t);
   const base = { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p" };
   const both = await app.call("POST", "/api/jobs", { ...base, shipCommand: "true", releaseInstructions: "Release it" });
   assert.equal(both.status, 400);
   assert.match(both.json.fields.releaseInstructions, /not both/);
   const lonely = await app.call("POST", "/api/jobs", { ...base, autoRelease: true });
-  assert.match(lonely.json.fields.autoRelease, /release instructions or a ship command first/);
-  const job = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true });
-  assert.equal(job.status, 201);
-  assert.deepEqual([job.json.releaseInstructions, job.json.autoRelease], ["Release it", true]);
-  // Older clients leave both out, and their updates keep them.
-  const { releaseInstructions: _r, autoRelease: _a, ...older } = job.json;
+  assert.match(lonely.json.fields.autoRelease, /release instructions or a release script first/);
+  const unchecked = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true });
+  assert.match(unchecked.json.fields.autoRelease, /Add a check command first/);
+  const verifyAlone = await app.call("POST", "/api/jobs", { ...base, verifyCommand: "true" });
+  assert.match(verifyAlone.json.fields.verifyCommand, /release instructions or a release script first/);
+  const job = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true, checkCommand: "true", verifyCommand: "curl -f localhost" });
+  assert.equal(job.status, 201, JSON.stringify(job.json));
+  assert.deepEqual([job.json.releaseInstructions, job.json.autoRelease, job.json.verifyCommand], ["Release it", true, "curl -f localhost"]);
+  // Older clients leave new fields out, and their updates keep them.
+  const { releaseInstructions: _r, autoRelease: _a, verifyCommand: _v, ...older } = job.json;
   const kept = await app.call("PUT", `/api/jobs/${job.json.id}`, older);
-  assert.deepEqual([kept.json.releaseInstructions, kept.json.autoRelease], ["Release it", true]);
+  assert.deepEqual([kept.json.releaseInstructions, kept.json.autoRelease, kept.json.verifyCommand], ["Release it", true, "curl -f localhost"]);
+  // PATCH (and PUT) change only the fields sent: the check command survives a rename.
+  const renamed = await app.call("PATCH", `/api/jobs/${job.json.id}`, { name: "renamed" });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.json));
+  assert.deepEqual([renamed.json.name, renamed.json.checkCommand, renamed.json.enabled, renamed.json.timeoutMinutes], ["renamed", "true", true, 30]);
+  const paused = await app.call("PATCH", `/api/jobs/${job.json.id}`, { enabled: false });
+  assert.deepEqual([paused.json.enabled, paused.json.name], [false, "renamed"]);
 });
 
 test("requests from other hosts, cross-origin writes and form posts are rejected", async (t) => {

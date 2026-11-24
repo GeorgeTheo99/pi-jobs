@@ -4,13 +4,19 @@ import { AGENT_ID_PATTERN, BUILTIN_AGENT_IDS, buildArgv, isBuiltinAgent } from "
 import { isGitRepo, resolvesToCommit } from "./git.ts";
 import { HttpError } from "./http.ts";
 import { cronError } from "./scheduler.ts";
+import { jobBody } from "./actions.ts";
 import { DEFAULT_RETRIES, MAX_RETRIES, type Job, type JobInput, type Settings } from "./store.ts";
 
 /** The longest instructions, messages and release instructions the API takes. */
 export const MAX_INSTRUCTIONS = 20_000;
 
-/** Builds a job from a request body; for an update, omitted catch-up and retry settings keep their values. */
-export async function validateJob(body: Record<string, unknown>, settings: Settings, existing: Job | null = null): Promise<JobInput> {
+/**
+ * Builds a job from a request body. For an update, every field the body leaves out keeps the job's
+ * value, so PUT and PATCH both change only what they send.
+ */
+export async function validateJob(request: Record<string, unknown>, settings: Settings, existing: Job | null = null): Promise<JobInput> {
+  const sent = Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined));
+  const body: Record<string, unknown> = existing ? { ...jobBody(existing), ...sent } : sent;
   const fields: Record<string, string> = {};
   const text = (key: string) => (typeof body[key] === "string" ? (body[key] as string).trim() : "");
 
@@ -45,27 +51,30 @@ export async function validateJob(body: Record<string, unknown>, settings: Setti
     fields.timeoutMinutes = "Use a whole number of minutes from 1 to 1440";
   }
 
-  // Clients from before watch commands leave them out; an update from one keeps the job's.
-  const watchCommand = body.watchCommand === undefined ? (existing?.watchCommand ?? null) : text("watchCommand") || null;
+  const watchCommand = text("watchCommand") || null;
   if (watchCommand && watchCommand.length > 4000) fields.watchCommand = "Keep the watch command under 4,000 characters";
 
-  // Like the watch command: older clients leave it out, and their updates keep the job's.
-  const shipCommand = body.shipCommand === undefined ? (existing?.shipCommand ?? null) : text("shipCommand") || null;
-  if (shipCommand && shipCommand.length > 4000) fields.shipCommand = "Keep the ship command under 4,000 characters";
+  const shipCommand = text("shipCommand") || null;
+  if (shipCommand && shipCommand.length > 4000) fields.shipCommand = "Keep the release script under 4,000 characters";
 
-  // Like the ship command: older clients leave these out, and their updates keep the job's.
-  const releaseInstructions =
-    body.releaseInstructions === undefined ? (existing?.releaseInstructions ?? null) : text("releaseInstructions") || null;
+  const releaseInstructions = text("releaseInstructions") || null;
   if (releaseInstructions && releaseInstructions.length > MAX_INSTRUCTIONS) {
     fields.releaseInstructions = `Keep the release instructions under ${MAX_INSTRUCTIONS.toLocaleString("en-US")} characters`;
   }
   if (releaseInstructions && shipCommand) {
-    fields.releaseInstructions = "Use release instructions or a ship command, not both (the instructions can say to run the command)";
+    fields.releaseInstructions = "Use release instructions or a release script, not both (the instructions can say to run the script)";
   }
-  const autoRelease = typeof body.autoRelease === "boolean" ? body.autoRelease : (existing?.autoRelease ?? false);
-  if (autoRelease && !releaseInstructions && !shipCommand) fields.autoRelease = "Add release instructions or a ship command first";
+  const verifyCommand = text("verifyCommand") || null;
+  if (verifyCommand && verifyCommand.length > 4000) fields.verifyCommand = "Keep the verify command under 4,000 characters";
+  if (verifyCommand && !releaseInstructions && !shipCommand) fields.verifyCommand = "Add release instructions or a release script first";
 
-  const retries = Number(body.retries ?? existing?.retries ?? DEFAULT_RETRIES);
+  const checkCommand = text("checkCommand") || null;
+  const autoRelease = body.autoRelease === true;
+  if (autoRelease && !releaseInstructions && !shipCommand) fields.autoRelease = "Add release instructions or a release script first";
+  // Without a check, "succeeded" means only that the agent exited 0: too little to release on.
+  else if (autoRelease && !checkCommand) fields.autoRelease = "Add a check command first: automatic releases need a passing check";
+
+  const retries = Number(body.retries ?? DEFAULT_RETRIES);
   if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {
     fields.retries = `Use a whole number from 0 to ${MAX_RETRIES}`;
   }
@@ -79,14 +88,15 @@ export async function validateJob(body: Record<string, unknown>, settings: Setti
     agent: agent as JobInput["agent"],
     schedule,
     timeoutMinutes,
-    checkCommand: text("checkCommand") || null,
+    checkCommand,
     pushBranch: body.pushBranch === true,
-    catchUp: typeof body.catchUp === "boolean" ? body.catchUp : (existing?.catchUp ?? true),
+    catchUp: body.catchUp !== false,
     retries,
     watchCommand,
-    approveRuns: typeof body.approveRuns === "boolean" ? body.approveRuns : (existing?.approveRuns ?? false),
+    approveRuns: body.approveRuns === true,
     shipCommand,
     releaseInstructions,
+    verifyCommand,
     autoRelease,
     enabled: body.enabled !== false,
   };

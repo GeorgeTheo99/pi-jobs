@@ -46,6 +46,24 @@ export function jobRoutes(ctx: AppContext): Route[] {
       },
     ],
     [
+      "PATCH",
+      /^\/api\/jobs\/(\d+)$/,
+      async (req, [id]) => {
+        const existing = findJob(id);
+        const body = await readJson(req);
+        const input = await validateJob(body, store.getSettings(), existing);
+        const token =
+          body.webhookEnabled === undefined
+            ? existing.webhookToken
+            : body.webhookEnabled === true
+              ? (existing.webhookToken ?? newToken())
+              : null;
+        const job = store.updateJob(existing.id, input, token)!;
+        scheduler.sync(job);
+        return jobView(job);
+      },
+    ],
+    [
       "DELETE",
       /^\/api\/jobs\/(\d+)$/,
       async (_req, [id]) => {

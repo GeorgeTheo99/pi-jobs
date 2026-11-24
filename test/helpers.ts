@@ -47,6 +47,7 @@ export function setup() {
     approveRuns: false,
     shipCommand: null,
     releaseInstructions: null,
+    verifyCommand: null,
     autoRelease: false,
     enabled: true,
     ...overrides,

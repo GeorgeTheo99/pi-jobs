@@ -39,6 +39,7 @@ const JOB_FIELDS = [
   "approveRuns",
   "shipCommand",
   "releaseInstructions",
+  "verifyCommand",
   "autoRelease",
   "enabled",
 ] as const;
@@ -51,6 +52,7 @@ const RISKY_JOB_FIELDS: ReadonlySet<JobField> = new Set([
   "watchCommand",
   "shipCommand",
   "releaseInstructions",
+  "verifyCommand",
   "autoRelease",
   "pushBranch",
   "webhookEnabled",
@@ -118,6 +120,7 @@ export function jobBody(job: Job): Record<JobField, unknown> {
     approveRuns: job.approveRuns,
     shipCommand: job.shipCommand ?? "",
     releaseInstructions: job.releaseInstructions ?? "",
+    verifyCommand: job.verifyCommand ?? "",
     autoRelease: job.autoRelease,
     enabled: job.enabled,
   };

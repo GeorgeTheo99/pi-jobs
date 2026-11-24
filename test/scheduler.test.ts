@@ -20,6 +20,7 @@ const job = (overrides: Partial<Job> = {}): Job => ({
   approveRuns: false,
   shipCommand: null,
   releaseInstructions: null,
+  verifyCommand: null,
   autoRelease: false,
   enabled: true,
   webhookToken: null,
