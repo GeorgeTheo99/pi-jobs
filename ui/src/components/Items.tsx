@@ -14,7 +14,7 @@ const PILL_CLASSES: Record<ItemState, string> = {
   decision: "pill-amber",
   review: "pill-green",
   failed: "pill-red",
-  shipped: "pill-violet",
+  released: "pill-violet",
   merged: "pill-violet",
   closed: "pill-muted",
 };

@@ -343,7 +343,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               )}
             </Field>
             <Field
-              label="Or a ship command"
+              label="Or a release script"
               error={fields.shipCommand}
               hint="A script instead of the agent: it runs in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO. Write it to fail closed; its output goes back to the agent with your next Make changes."
             >

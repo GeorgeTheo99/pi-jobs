@@ -7,8 +7,8 @@ export type Trigger = "manual" | "schedule" | "webhook" | "watch";
  * release it by the job's release instructions.
  */
 export type RunMode = "change" | "ask" | "ship" | "release";
-/** Runs that ship an item: its ship command, or its agent releasing it. */
-export const isShipMode = (mode: RunMode) => mode === "ship" || mode === "release";
+/** Runs that release an item: its agent, or its release script ("ship"). */
+export const isReleaseMode = (mode: RunMode) => mode === "ship" || mode === "release";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
 const BUILTIN_LABELS: Record<string, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
@@ -82,7 +82,7 @@ export interface Job {
   retries: number;
   watchCommand: string | null;
   approveRuns: boolean;
-  /** What Ship runs on an item's result; null when the job can't ship. */
+  /** The release script run on an item's result; null without one. */
   shipCommand: string | null;
   /** What the agent follows to release an item's result; null when it doesn't. */
   releaseInstructions: string | null;
@@ -293,8 +293,8 @@ export const api = {
   approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
   followUp: (id: number, instructions: string, mode: RunMode = "change") =>
     request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions, mode }),
-  /** Runs the job's ship command on the run's item. */
-  ship: (id: number) => request<Run>("POST", `/api/runs/${id}/ship`),
+  /** Releases the run's item: the job's agent by its release instructions, or its release script. */
+  release: (id: number) => request<Run>("POST", `/api/runs/${id}/release`),
   /** Every run of the run's item, oldest first, with their reports. */
   thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
   changes: (id: number, sinceBase = false) => request<RunChanges>("GET", `/api/runs/${id}/changes${sinceBase ? "?since=base" : ""}`),

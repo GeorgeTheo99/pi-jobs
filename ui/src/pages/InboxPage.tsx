@@ -54,7 +54,7 @@ export function InboxPage() {
   );
   const running = pick(["running"]);
   const review = pick(["review"]);
-  const recent = pick(["failed", "shipped", "merged", "closed"]);
+  const recent = pick(["failed", "released", "merged", "closed"]);
 
   return (
     <>

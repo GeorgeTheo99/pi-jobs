@@ -1,5 +1,5 @@
 import type { Run } from "./api";
-import { canShip, groupItems, itemFields } from "./items";
+import { canRelease, groupItems, itemFields } from "./items";
 
 const run = (overrides: Partial<Run>): Run => ({
   id: 1,
@@ -95,25 +95,25 @@ const SHIP = { shipCommand: "scripts/ship.sh", releaseInstructions: null };
 test("a ship joins its item: shipped once it succeeds; Ship needs a command, changes and succeeded work", () => {
   const work = run({ id: 1, commits: 1, headCommit: "abc" });
   const [ready] = groupItems([work]);
-  expect(canShip(ready!, SHIP)).toBe(true);
-  expect(canShip(ready!, { shipCommand: null, releaseInstructions: "Release it" })).toBe(true);
-  expect(canShip(ready!, { shipCommand: null, releaseInstructions: null })).toBe(false);
-  expect(canShip(groupItems([run({ id: 1, commits: 0 })])[0]!, SHIP)).toBe(false);
-  expect(canShip(groupItems([run({ id: 1, commits: 1, status: "failed" })])[0]!, SHIP)).toBe(false);
+  expect(canRelease(ready!, SHIP)).toBe(true);
+  expect(canRelease(ready!, { shipCommand: null, releaseInstructions: "Release it" })).toBe(true);
+  expect(canRelease(ready!, { shipCommand: null, releaseInstructions: null })).toBe(false);
+  expect(canRelease(groupItems([run({ id: 1, commits: 0 })])[0]!, SHIP)).toBe(false);
+  expect(canRelease(groupItems([run({ id: 1, commits: 1, status: "failed" })])[0]!, SHIP)).toBe(false);
 
-  const failedShip = run({ id: 2, followUpOf: 1, trigger: "manual", mode: "ship", status: "failed", instructions: "scripts/ship.sh" });
-  const [broken] = groupItems([work, failedShip]);
+  const failedScript = run({ id: 2, followUpOf: 1, trigger: "manual", mode: "ship", status: "failed", instructions: "scripts/ship.sh" });
+  const [broken] = groupItems([work, failedScript]);
   expect(broken!.state).toBe("failed");
-  expect(canShip(broken!, SHIP)).toBe(true);
+  expect(canRelease(broken!, SHIP)).toBe(true);
 
-  const [shipped] = groupItems([work, failedShip, run({ id: 3, followUpOf: 2, trigger: "manual", mode: "ship", instructions: "scripts/ship.sh" })]);
-  expect(shipped!.state).toBe("shipped");
-  expect(canShip(groupItems([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })])[0]!, SHIP)).toBe(false);
+  const [shipped] = groupItems([work, failedScript, run({ id: 3, followUpOf: 2, trigger: "manual", mode: "ship", instructions: "scripts/ship.sh" })]);
+  expect(shipped!.state).toBe("released");
+  expect(canRelease(groupItems([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })])[0]!, SHIP)).toBe(false);
 
   // The agent releasing it works the same way.
   const release = { shipCommand: null, releaseInstructions: "Release it" };
   const failedRelease = run({ id: 2, followUpOf: 1, trigger: "manual", mode: "release", status: "failed", instructions: "Release it" });
-  expect(canShip(groupItems([work, failedRelease])[0]!, release)).toBe(true);
+  expect(canRelease(groupItems([work, failedRelease])[0]!, release)).toBe(true);
   const [released] = groupItems([work, failedRelease, run({ id: 3, followUpOf: 2, trigger: "manual", mode: "release", instructions: "Release it" })]);
-  expect(released!.state).toBe("shipped");
+  expect(released!.state).toBe("released");
 });

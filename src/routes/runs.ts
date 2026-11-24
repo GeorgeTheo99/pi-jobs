@@ -137,11 +137,11 @@ export function runRoutes(ctx: AppContext): Route[] {
     ],
     [
       "POST",
-      /^\/api\/runs\/(\d+)\/ship$/,
+      /^\/api\/runs\/(\d+)\/(?:release|ship)$/,
       async (_req, [id]) => {
         const run = store.getRun(Number(id));
         if (!run) throw new HttpError(404, "Run not found");
-        return runner.ship(run);
+        return runner.release(run);
       },
     ],
     [

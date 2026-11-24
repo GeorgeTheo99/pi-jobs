@@ -6,7 +6,7 @@ import type { CallApi } from "./actions.ts";
 import { ChatBusyError, type ChatRunner } from "./chat.ts";
 import type { Config } from "./config.ts";
 import { HttpError, bearerToken, proxyPrefix, sendJson } from "./http.ts";
-import { JobPausedError, QueueFullError, ShipRefusedError, type Runner } from "./runner.ts";
+import { JobPausedError, QueueFullError, ReleaseRefusedError, type Runner } from "./runner.ts";
 import type { Scheduler } from "./scheduler.ts";
 import type { Store } from "./store.ts";
 import { adminRoutes } from "./routes/admin.ts";
@@ -41,7 +41,7 @@ const CONTENT_TYPES: Record<string, string> = {
 /** The HTTP status for errors the runner and chats raise: a full queue, or a request that doesn't fit the current state. */
 function domainStatus(error: unknown): number | null {
   if (error instanceof QueueFullError) return 429;
-  if (error instanceof ShipRefusedError || error instanceof JobPausedError || error instanceof ChatBusyError) return 409;
+  if (error instanceof ReleaseRefusedError || error instanceof JobPausedError || error instanceof ChatBusyError) return 409;
   return null;
 }
 

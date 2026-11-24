@@ -323,8 +323,8 @@ const DEFINITIONS: Record<string, Definition> = {
     request: (args, store) => ({ method: "POST", path: `/api/runs/${findRun(args, store).id}/cancel` }),
     outcome: (response) => ({ text: `Run #${(response as Run).id}: ${(response as Run).status}` }),
   },
-  ship: {
-    help: `ship {"runId"}: release the item's result (any run of the item): the job's agent follows its release instructions, or its ship command runs.`,
+  release: {
+    help: `release {"runId"}: release the item's result (any run of the item): the job's agent follows its release instructions, or its ship command runs.`,
     plan(args, store) {
       const run = findRun(args, store);
       const job = store.getJob(run.jobId);
@@ -338,7 +338,7 @@ const DEFINITIONS: Record<string, Definition> = {
         basis: job.updatedAt,
       };
     },
-    request: (args, store) => ({ method: "POST", path: `/api/runs/${findRun(args, store).id}/ship` }),
+    request: (args, store) => ({ method: "POST", path: `/api/runs/${findRun(args, store).id}/release` }),
     outcome: (response) => ({ text: `Started release run #${(response as Run).id}` }),
   },
   close_item: {
@@ -410,6 +410,9 @@ const DEFINITIONS: Record<string, Definition> = {
   },
 };
 
+// The name from before releases; agents that learned it still get a card.
+const ALIASES: Record<string, string> = { ship: "release" };
+
 export const ACTION_TYPES = Object.keys(DEFINITIONS);
 
 /** One line per action type, for the agent's prompt. */
@@ -425,7 +428,7 @@ export function planAction(proposal: unknown, store: Store): ChatAction {
   const type = typeof record?.type === "string" ? record.type : "";
   const { type: _type, ...args } = record ?? {};
   const base: ChatAction = { type, args, title: type || "Unreadable action", changes: [], risky: false, basis: null, status: "proposed", result: null, error: null };
-  const definition = DEFINITIONS[type];
+  const definition = DEFINITIONS[ALIASES[type] ?? type];
   if (!definition) return { ...base, status: "invalid", error: `Unknown action type ${JSON.stringify(type)}` };
   try {
     return { ...base, ...definition.plan(args, store) };
@@ -440,7 +443,7 @@ export function planAction(proposal: unknown, store: Store): ChatAction {
  * Returns the action as applied or failed, and a secret for the owner's card when it made one.
  */
 export async function applyAction(action: ChatAction, store: Store, callApi: CallApi): Promise<{ action: ChatAction; secret?: string }> {
-  const definition = DEFINITIONS[action.type];
+  const definition = DEFINITIONS[ALIASES[action.type] ?? action.type];
   try {
     if (!definition) throw new ActionError(`Unknown action type ${JSON.stringify(action.type)}`);
     const now = definition.plan(action.args, store);

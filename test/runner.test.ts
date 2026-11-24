@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { ShipRefusedError } from "../src/runner.ts";
+import { ReleaseRefusedError } from "../src/runner.ts";
 import type { Run } from "../src/store.ts";
 import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
 
@@ -778,7 +778,7 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   assert.match(readFileSync(ctx.runner.logPath(change.id), "utf8"), /resuming session/);
 
   // A ship runs no agent, so the conversation carries on past it; its output is told to the agent.
-  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.ship(change)).id);
+  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.release(change)).id);
   assert.equal(shipped.status, "succeeded", shipped.error ?? "");
   assert.equal(shipped.sessionId, root.sessionId);
   const after = await waitForFinish(ctx.runner, ctx.runner.followUp(shipped, "Tidy up", "change").id);
@@ -873,7 +873,7 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.ok("run" in nothing);
   ctx.useFakeAgent("noop");
   const empty = await waitForFinish(ctx.runner, nothing.run.id);
-  await assert.rejects(ctx.runner.ship(empty), new ShipRefusedError("Nothing to ship: this item has no changes"));
+  await assert.rejects(ctx.runner.release(empty), new ReleaseRefusedError("Nothing to release: this item has no changes"));
 
   ctx.useFakeAgent("commit");
   const started = ctx.runner.trigger(job, "manual");
@@ -882,11 +882,11 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.equal(changed.commits, 1);
   const other = ctx.runner.trigger(plain, "manual");
   assert.ok("run" in other);
-  await assert.rejects(ctx.runner.ship(await waitForFinish(ctx.runner, other.run.id)), /no release instructions or ship command/);
+  await assert.rejects(ctx.runner.release(await waitForFinish(ctx.runner, other.run.id)), /no release instructions or ship command/);
 
   // Paused jobs can still be shipped: the owner starts it.
   ctx.store.updateJob(job.id, { ...ctx.jobInput({ shipCommand, retries: 2 }), enabled: false }, null);
-  const queued = await ctx.runner.ship(changed);
+  const queued = await ctx.runner.release(changed);
   assert.equal(queued.mode, "ship");
   assert.equal(queued.instructions, shipCommand);
   assert.equal(queued.itemId, changed.itemId);
@@ -913,17 +913,17 @@ test("ship runs the job's ship command on the item's result; it is never retried
   assert.match(prompt, /The job's instructions:\n```\nDo the thing/, "the ship command isn't passed off as instructions");
 
   writeFileSync(ok, "");
-  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.ship(fix)).id);
+  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.release(fix)).id);
   assert.equal(shipped.status, "succeeded", shipped.error ?? "");
   assert.equal(shipped.baseCommit, fix.headCommit);
   assert.equal(readFileSync(record, "utf8").split(" ")[0], fix.headCommit);
   // A ship can be repeated by the owner; a running item can't be shipped.
   ctx.useFakeAgent("sleep");
   const busy = ctx.runner.followUp(shipped, "Keep going");
-  await assert.rejects(ctx.runner.ship(shipped), /Wait for the item's runs to finish/);
+  await assert.rejects(ctx.runner.release(shipped), /Wait for the item's runs to finish/);
   ctx.runner.cancel(busy.id);
   const canceled = await waitForFinish(ctx.runner, busy.id);
-  await assert.rejects(ctx.runner.ship(canceled), /Only a succeeded result can be shipped/);
+  await assert.rejects(ctx.runner.release(canceled), /Only a succeeded result can be released/);
 });
 
 test("a release run has the agent ship the item: it may push, is never retried, and autoRelease starts it by itself", async (t) => {
@@ -946,7 +946,7 @@ test("a release run has the agent ship the item: it may push, is never retried, 
 
   // Two releases of one item can't be queued at once.
   ctx.useFakeAgent("not-released");
-  const both = await Promise.allSettled([ctx.runner.ship(changed), ctx.runner.ship(changed)]);
+  const both = await Promise.allSettled([ctx.runner.release(changed), ctx.runner.release(changed)]);
   const queued1 = both.filter((r): r is PromiseFulfilledResult<Run> => r.status === "fulfilled");
   assert.equal(queued1.length, 1, "exactly one is queued");
   assert.match(String((both.find((r) => r.status === "rejected") as PromiseRejectedResult).reason), /Wait for the item's runs to finish/);
@@ -958,7 +958,7 @@ test("a release run has the agent ship the item: it may push, is never retried, 
 
   // A failed release isn't retried: it may have done part of something irreversible.
   ctx.useFakeAgent("fail");
-  const failed = await waitForFinish(ctx.runner, (await ctx.runner.ship(stopped)).id);
+  const failed = await waitForFinish(ctx.runner, (await ctx.runner.release(stopped)).id);
   assert.equal(failed.mode, "release");
   assert.equal(failed.status, "failed");
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -967,7 +967,7 @@ test("a release run has the agent ship the item: it may push, is never retried, 
 
   // The owner releases again.
   ctx.useFakeAgent(`release:${record}`);
-  const queued = await ctx.runner.ship(failed);
+  const queued = await ctx.runner.release(failed);
   assert.equal(queued.mode, "release");
   assert.equal(queued.instructions, releaseInstructions);
   assert.equal(queued.agent, "pi");

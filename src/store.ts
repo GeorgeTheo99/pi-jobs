@@ -7,12 +7,12 @@ import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, type AgentId } from
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
  * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
- * ship run runs the job's ship command (no agent) on the item's result; a release run has the agent
- * ship it by following the job's release instructions.
+ * release: a "release" run has the agent release the item's result by the job's release instructions,
+ * a "ship" run runs the job's release script (shipCommand, no agent) on it.
  */
 export type RunMode = "change" | "ask" | "ship" | "release";
-/** Runs that ship an item, with the job's ship command or its agent. */
-export const SHIP_MODES: readonly RunMode[] = ["ship", "release"];
+/** Runs that release an item, by its agent or its release script. */
+export const RELEASE_MODES: readonly RunMode[] = ["ship", "release"];
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 /** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
@@ -44,8 +44,8 @@ export interface JobInput {
   /** Runs started by the schedule, webhook or watch wait for approval; manual runs never do. */
   approveRuns: boolean;
   /**
-   * Shell command the owner runs on an item's result with Ship (merge, release, deploy: whatever the
-   * repository's own script does). pi-jobs never runs it by itself.
+   * The release script (merge, release, deploy: whatever the repository's own script does), run on
+   * an item's result when the owner releases it, or by autoRelease. Exclusive with releaseInstructions.
    */
   shipCommand: string | null;
   /**
@@ -691,7 +691,7 @@ export class Store {
    * session on, so the agent's next follow-up continues that conversation; a release run picks its
    * session when it starts, like a follow-up.
    */
-  createShip(of: Run, agent: AgentId, instructions: string, mode: "ship" | "release" = "ship"): Run {
+  createRelease(of: Run, agent: AgentId, instructions: string, mode: "ship" | "release" = "ship"): Run {
     const result = this.db
       .prepare(
         `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, item_id, session_id, created_at)

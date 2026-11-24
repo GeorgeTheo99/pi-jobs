@@ -5,9 +5,9 @@ import { Changes } from "@/components/Changes";
 import { ItemPill } from "@/components/Items";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton, ErrorNote, Skeleton, StatusPill, Switch } from "@/components/ui";
-import { agentLabel, ApiError, TRIGGER_LABELS, api, isActive, isShipMode, type Job, type Run, type RunMode } from "@/lib/api";
+import { agentLabel, ApiError, TRIGGER_LABELS, api, isActive, isReleaseMode, type Job, type Run, type RunMode } from "@/lib/api";
 import { dateTime, duration, relativeTime, repoName, summarizePayload } from "@/lib/format";
-import { canShip, groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
+import { canRelease, groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
 import { VERDICT_LABELS, parseVerdict, splitReply, type Verdict } from "@/lib/report";
 import { useNow, usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
@@ -83,10 +83,10 @@ export function RunPage() {
               <MessagesSquare aria-hidden className="size-3.5" />
               Chat about it
             </Link>
-            {job && canShip(item, job) && (
+            {job && canRelease(item, job) && (
               <button
                 type="button"
-                className={`btn ${item.state === "shipped" ? "btn-ghost" : "btn-primary"}`}
+                className={`btn ${item.state === "released" ? "btn-ghost" : "btn-primary"}`}
                 title={job.releaseInstructions ? `${agentLabel(job.effectiveAgent)} releases this item's result by the job's release instructions` : `Runs ${job.shipCommand} on this item's result`}
                 onClick={() => {
                   const commit = item.withChanges?.headCommit?.slice(0, 12) ?? "";
@@ -94,14 +94,14 @@ export function RunPage() {
                     ? `${agentLabel(job.effectiveAgent)} follows the job's release instructions and may merge, push, deploy and publish:\n\n${job.releaseInstructions}`
                     : `Runs: ${job.shipCommand}`;
                   if (!window.confirm(`Release this item's result (${commit})?\n\n${how}\n\nIt runs as you, with your credentials, and may do things that can't be undone.`)) return;
-                  void act(() => api.ship(item.latest.id));
+                  void act(() => api.release(item.latest.id));
                 }}
               >
                 <Rocket aria-hidden className="size-3.5" />
-                {isShipMode(item.latestWork.mode) ? "Release again" : "Approve & release"}
+                {isReleaseMode(item.latestWork.mode) ? "Release again" : "Approve & release"}
               </button>
             )}
-            {itemFinished && item.state !== "merged" && item.state !== "shipped" && (
+            {itemFinished && item.state !== "merged" && item.state !== "released" && (
               <button
                 type="button"
                 className="btn btn-ghost"
@@ -223,7 +223,7 @@ function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = parseVerdict(run.summary);
   const [label, tone] =
-    isShipMode(run.mode)
+    isReleaseMode(run.mode)
       ? [run.mode === "release" ? "Released" : "Shipped", "pill-violet"]
       : run.mode === "ask"
       ? ["Answered", "pill-muted"]
@@ -290,7 +290,7 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
   const [expanded, setExpanded] = useState(selected || latest || !long);
   const ask = run.mode === "ask";
   const release = run.mode === "release";
-  if (run.mode === "ship") return <ShipTurn run={run} selected={selected} />;
+  if (run.mode === "ship") return <ScriptReleaseTurn run={run} selected={selected} />;
   return (
     <div className="grid gap-3">
       {run.instructions !== null && run.retryOf === null ? (
@@ -360,11 +360,11 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
   );
 }
 
-/** How many of a ship command's last lines its turn shows; the whole output is in the log. */
+/** How many of a release script's last lines its turn shows; the whole output is in the log. */
 const SHIP_TAIL_LINES = 30;
 
-/** A ship: the owner ran the job's ship command; what it printed (the end) instead of an agent's report. */
-function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
+/** A release by script: the job's release script ran; what it printed (the end) instead of an agent's report. */
+function ScriptReleaseTurn({ run, selected }: { run: Run; selected: boolean }) {
   const now = useNow(1000);
   const active = isActive(run.status);
   const output = (run.summary ?? "").split("\n").slice(-SHIP_TAIL_LINES).join("\n");
@@ -373,13 +373,13 @@ function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
       <div className="turn-you">
         <div className="turn-label">
           <Rocket aria-hidden className="size-3.5" />
-          You · Ship · {relativeTime(run.createdAt, now)}
+          Release · {relativeTime(run.createdAt, now)}
         </div>
         <p className="font-mono text-[13px] break-all text-bone">{run.instructions}</p>
       </div>
       <div className={`turn-agent ${selected ? "turn-selected" : ""}`} aria-current={selected ? "true" : undefined}>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
-          <span className="turn-label">Ship command</span>
+          <span className="turn-label">Release script</span>
           <RunPill run={run} />
           <Link to={`/runs/${run.id}`} className="font-mono hover:text-bone" title="Select this run for its details and log">
             #{run.id}
@@ -391,7 +391,7 @@ function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
           <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
         ) : run.status === "running" ? (
           <p className="text-[14px] text-fog">
-            Shipping…{" "}
+            Releasing…{" "}
             {!selected && (
               <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
                 Watch the log
@@ -404,10 +404,10 @@ function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
             {output ? (
               <pre className="log-view max-h-80 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{output}</pre>
             ) : (
-              !active && <p className="text-[14px] text-fog">The ship command printed nothing.</p>
+              !active && <p className="text-[14px] text-fog">The release script printed nothing.</p>
             )}
             {run.status !== "succeeded" && (
-              <p className="text-[13px] text-fog">Send a change below and the agent gets this output as context; then ship again.</p>
+              <p className="text-[13px] text-fog">Send a change below and the agent gets this output as context; then release again.</p>
             )}
           </>
         )}
