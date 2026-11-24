@@ -1,27 +1,30 @@
-import { isReleaseMode, type Job, type Run } from "./api";
+import type { ItemData, ItemState, Run, Verdict } from "./api";
 import { summarizePayload } from "./format";
-import { parseVerdict, type Verdict } from "./report";
+
+export type { ItemState } from "./api";
 
 /**
- * One piece of work: a run started by a trigger, with its retries and follow-ups. A support report's
- * triage, the follow-up that implements it, and their retries are one item.
+ * One piece of work: a run started by a trigger, with its retries, follow-ups and releases. A support
+ * report's triage, the run that implements it, and its release are one item. The server groups runs
+ * into items and says what each needs next; this adds the runs it points at.
  */
 export interface Item {
+  id: number;
   root: Run;
   /** Oldest first. */
   runs: Run[];
   /** The newest run. */
   latest: Run;
-  /** The newest run that isn't a question: what closing, reopening and retrying act on. */
+  /** The newest run that isn't a question: what closing, reopening and releasing act on. */
   latestWork: Run;
   state: ItemState;
   verdict: Verdict;
-  /** The newest run that left commits. */
+  /** The newest run that left commits on a branch. */
   withChanges: Run | null;
   replied: boolean;
+  /** Approve & release can start now. */
+  canRelease: boolean;
 }
-
-export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "released" | "merged" | "closed";
 
 export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   approval: "Needs approval",
@@ -34,67 +37,23 @@ export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   closed: "Closed",
 };
 
-/** Items needing the owner come first in the Inbox. */
-export const WAITING_STATES: readonly ItemState[] = ["approval", "decision"];
+/** Items waiting on the owner: they head the Inbox and count in its badge. */
+export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "failed"];
 
-/** Groups runs into items: each run belongs to the item of the run it retries or follows up on. */
-export function groupItems(runs: Run[]): Item[] {
-  const byId = new Map(runs.map((run) => [run.id, run]));
-  const rootOf = (run: Run): Run => {
-    let current = run;
-    for (let hops = 0; hops < 1000; hops++) {
-      const parentId = current.retryOf ?? current.followUpOf;
-      const parent = parentId === null ? undefined : byId.get(parentId);
-      if (!parent) return current;
-      current = parent;
-    }
-    return current;
-  };
-  const groups = new Map<number, Run[]>();
-  for (const run of [...runs].sort((a, b) => a.id - b.id)) {
-    const root = rootOf(run);
-    groups.set(root.id, [...(groups.get(root.id) ?? []), run]);
-  }
-  return [...groups.values()].map(toItem).sort((a, b) => b.latest.id - a.latest.id);
-}
-
-function toItem(runs: Run[]): Item {
-  const root = runs[0]!;
-  const latest = runs.at(-1)!;
-  // Questions answer; they don't change what the item came to, so its verdict and state skip them.
-  const work = runs.filter((run) => run.mode !== "ask");
-  const finished = [...work].reverse().find((run) => !isOpen(run)) ?? null;
-  const withChanges = [...runs].reverse().find((run) => (run.commits ?? 0) > 0) ?? null;
-  // Lists carry the report's headline and verdict line, not the whole report.
-  const verdict = parseVerdict(
-    finished?.summary ?? ([finished?.summaryHeadline, finished?.summaryVerdict].filter(Boolean).join("\n") || null),
-  );
+export function toItem(data: ItemData): Item {
+  const byId = (id: number | null) => (id === null ? null : (data.runs.find((run) => run.id === id) ?? null));
   return {
-    root,
-    runs,
-    latest,
-    latestWork: work.at(-1) ?? latest,
-    state: stateOf(runs, work.at(-1) ?? latest, verdict, withChanges),
-    verdict,
-    withChanges,
-    replied: runs.some((run) => run.repliedAt !== null),
+    id: data.id,
+    root: data.runs[0]!,
+    runs: data.runs,
+    latest: data.runs.at(-1)!,
+    latestWork: byId(data.latestWorkId) ?? data.runs.at(-1)!,
+    state: data.state,
+    verdict: data.verdict,
+    withChanges: byId(data.withChangesId),
+    replied: data.replied,
+    canRelease: data.canRelease,
   };
-}
-
-const isOpen = (run: Run) => run.status === "awaiting_approval" || run.status === "queued" || run.status === "running";
-
-function stateOf(runs: Run[], latestWork: Run, verdict: Verdict, withChanges: Run | null): ItemState {
-  if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
-  if (runs.some(isOpen)) return "running";
-  if (isReleaseMode(latestWork.mode) && latestWork.status === "succeeded") return "released";
-  if (withChanges?.merged) return "merged";
-  if (latestWork.closedAt !== null) return "closed";
-  if (latestWork.status === "failed" || latestWork.status === "timed_out") return "failed";
-  if (latestWork.status === "canceled") return "closed";
-  if (verdict === "needs_decision") return "decision";
-  if (verdict === "cant_reproduce" || verdict === "duplicate" || verdict === "not_actionable") return "closed";
-  if (withChanges) return "review";
-  return "closed";
 }
 
 /** What an item is about: its report's description, else the job's name. */
@@ -115,16 +74,6 @@ export function itemFields(run: Run): { reference: string | null; kind: string |
     // Not JSON: no fields.
   }
   return { reference: null, kind: null, receivedAt: null };
-}
-
-/**
- * Whether the item can be released now: the job has release instructions or a ship command, nothing
- * is running, the item has changes, and its newest work succeeded (or was a release, which the owner
- * may run again).
- */
-export function canRelease(item: Item, job: Pick<Job, "shipCommand" | "releaseInstructions"> | null | undefined): boolean {
-  if ((!job?.shipCommand && !job?.releaseInstructions) || item.runs.some(isOpen) || !item.withChanges) return false;
-  return item.latestWork.status === "succeeded" || isReleaseMode(item.latestWork.mode);
 }
 
 /** The run an item's link opens: the one waiting or running, else the newest finished one. */

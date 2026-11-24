@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { HttpError, intParam, readChunk, readJson } from "../http.ts";
-import { summaryHeadline, summaryVerdict } from "../report.ts";
-import { ACTIVE_STATUSES } from "../store.ts";
+import { WAITING_STATES, itemView, listRunView, runView } from "../items.ts";
+import { ACTIVE_STATUSES, type Run } from "../store.ts";
 import { MAX_INSTRUCTIONS } from "../validate.ts";
 import type { AppContext, Route } from "./context.ts";
 
@@ -17,12 +17,24 @@ export function runRoutes(ctx: AppContext): Route[] {
         const runs = store.listRuns({ jobId: intParam(url, "jobId"), limit: intParam(url, "limit") });
         const merged = await runner.repos.mergedRuns(runs);
         // Lists carry the first line of each summary, not the whole report.
-        return runs.map(({ summary, ...run }) => ({
-          ...run,
-          summaryHeadline: summaryHeadline(summary),
-          summaryVerdict: summaryVerdict(summary),
-          merged: merged.has(run.id),
-        }));
+        return runs.map((run) => listRunView(run, merged.has(run.id)));
+      },
+    ],
+    [
+      "GET",
+      /^\/api\/items$/,
+      async (_req, _params, url) => {
+        // Newest activity first; ?waiting=1 keeps only items waiting on the owner.
+        const ids = store.itemIds({ jobId: intParam(url, "jobId"), limit: intParam(url, "limit") ?? 100 });
+        const runs = store.runsOfItems(ids);
+        const merged = await runner.repos.mergedRuns(runs);
+        const byItem = new Map<number, ReturnType<typeof listRunView>[]>();
+        for (const run of runs) byItem.set(run.itemId, [...(byItem.get(run.itemId) ?? []), listRunView(run, merged.has(run.id))]);
+        const items = ids.flatMap((id) => {
+          const itemRuns = byItem.get(id);
+          return itemRuns ? [itemView(itemRuns, store.getJob(itemRuns[0]!.jobId))] : [];
+        });
+        return url.searchParams.get("waiting") === "1" ? items.filter((item) => WAITING_STATES.includes(item.state)) : items;
       },
     ],
     [
@@ -32,7 +44,7 @@ export function runRoutes(ctx: AppContext): Route[] {
         const run = store.getRun(Number(id));
         if (!run) throw new HttpError(404, "Run not found");
         const merged = await runner.repos.mergedRuns([run]);
-        return { ...run, summaryHeadline: summaryHeadline(run.summary), merged: merged.has(run.id) };
+        return runView(run, merged.has(run.id));
       },
     ],
     [
@@ -42,15 +54,22 @@ export function runRoutes(ctx: AppContext): Route[] {
         const run = store.getRun(Number(id));
         if (!run) throw new HttpError(404, "Run not found");
         // Every run of the item, oldest first, with their reports: the item's conversation.
-        const runs = store.itemRuns(run.itemId);
-        const merged = await runner.repos.mergedRuns(runs);
-        return runs.map((r) => ({
-          ...r,
-          summaryHeadline: summaryHeadline(r.summary),
-          summaryVerdict: summaryVerdict(r.summary),
-          merged: merged.has(r.id),
-        }));
+        return (await itemOf(run)).runs;
       },
+    ],
+    [
+      "GET",
+      /^\/api\/runs\/(\d+)\/release-preview$/,
+      async (_req, [id]) => {
+        const preview = await runner.releasePreview(ctx.findRun(id));
+        if (!preview) throw new HttpError(404, "This item has no changes to release");
+        return preview;
+      },
+    ],
+    [
+      "GET",
+      /^\/api\/runs\/(\d+)\/item$/,
+      async (_req, [id]) => itemOf(ctx.findRun(id)),
     ],
     [
       "GET",
@@ -83,9 +102,9 @@ export function runRoutes(ctx: AppContext): Route[] {
     [
       "POST",
       /^\/api\/runs\/(\d+)\/approve$/,
-      async (_req, [id]) => {
+      async (req, [id]) => {
         if (!store.getRun(Number(id))) throw new HttpError(404, "Run not found");
-        const run = runner.approve(Number(id));
+        const run = runner.approve(Number(id), ctx.sessions.get(req)?.name);
         if (!run) throw new HttpError(409, "This run isn't waiting for approval");
         return run;
       },
@@ -132,16 +151,21 @@ export function runRoutes(ctx: AppContext): Route[] {
         if (body.mode !== undefined && body.mode !== "ask" && body.mode !== "change") {
           throw new HttpError(400, "Fix the highlighted fields", { mode: 'Use "ask" or "change"' });
         }
-        return runner.followUp(previous, instructions, body.mode === "ask" ? "ask" : "change");
+        const run = runner.followUp(previous, instructions, body.mode === "ask" ? "ask" : "change");
+        return store.updateRun(run.id, { requestedBy: ctx.sessions.get(req)?.name ?? null });
       },
     ],
     [
       "POST",
       /^\/api\/runs\/(\d+)\/(?:release|ship)$/,
-      async (_req, [id]) => {
-        const run = store.getRun(Number(id));
-        if (!run) throw new HttpError(404, "Run not found");
-        return runner.release(run);
+      async (req, [id]) => {
+        const run = ctx.findRun(id);
+        // The head the owner reviewed (optional, for older clients): releasing refuses if the item moved on.
+        const body = await readJson(req);
+        if (body.expectedHead !== undefined && (typeof body.expectedHead !== "string" || !/^[0-9a-f]{40}$/.test(body.expectedHead))) {
+          throw new HttpError(400, "expectedHead must be a full commit id");
+        }
+        return runner.release(run, { expectedHead: body.expectedHead as string | undefined, requestedBy: ctx.sessions.get(req)?.name });
       },
     ],
     [
@@ -154,4 +178,14 @@ export function runRoutes(ctx: AppContext): Route[] {
       },
     ],
   ];
+
+  /** A run's item, with every run's full report. */
+  async function itemOf(run: Run) {
+    const runs = store.itemRuns(run.itemId);
+    const merged = await runner.repos.mergedRuns(runs);
+    return itemView(
+      runs.map((r) => runView(r, merged.has(r.id))),
+      store.getJob(run.jobId),
+    );
+  }
 }

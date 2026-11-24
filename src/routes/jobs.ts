@@ -81,7 +81,10 @@ export function jobRoutes(ctx: AppContext): Route[] {
     [
       "POST",
       /^\/api\/jobs\/(\d+)\/run$/,
-      async (_req, [id]) => startRun(findJob(id), "manual", null),
+      async (req, [id]) => {
+        const run = startRun(findJob(id), "manual", null);
+        return store.updateRun(run.id, { requestedBy: ctx.sessions.get(req)?.name ?? null });
+      },
     ],
     [
       "POST",

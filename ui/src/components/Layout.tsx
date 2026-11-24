@@ -1,8 +1,7 @@
 import { CalendarClock, Inbox, MessagesSquare, Settings } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { api } from "@/lib/api";
-import { WAITING_STATES, groupItems } from "@/lib/items";
 import { usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
 const NAV = [
@@ -21,11 +20,15 @@ function Brand() {
   );
 }
 
-/** How many items wait on the owner: runs to approve and proposals to decide on. */
+/** How many items wait on the owner (to approve, decide on, review, or fix after a failure); the tab title shows it too. */
 function useWaitingCount(): number {
-  const { data, refresh } = usePoll(() => api.runs(undefined, 200), 5000);
+  const { data, refresh } = usePoll(() => api.items({ waiting: true, limit: 200 }), 5000);
   useRefreshOnChange(refresh);
-  return useMemo(() => (data ? groupItems(data).filter((item) => WAITING_STATES.includes(item.state)).length : 0), [data]);
+  const count = data?.length ?? 0;
+  useEffect(() => {
+    document.title = count > 0 ? `(${count}) pi-jobs` : "pi-jobs";
+  }, [count]);
+  return count;
 }
 
 function Badge({ count }: { count: number }) {

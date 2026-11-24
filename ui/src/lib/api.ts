@@ -1,5 +1,21 @@
 /** A built-in agent (pi, claude, codex) or one added in Settings by name, such as "pi-claude". */
 export type AgentId = string;
+
+export type Verdict = "implemented" | "fixed" | "needs_decision" | "cant_reproduce" | "duplicate" | "not_actionable" | "unknown";
+export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "released" | "merged" | "closed";
+
+/** An item as the server sends it: its runs (oldest first) and what it needs next. */
+export interface ItemData {
+  id: number;
+  jobId: number;
+  state: ItemState;
+  verdict: Verdict;
+  runs: Run[];
+  latestWorkId: number;
+  withChangesId: number | null;
+  replied: boolean;
+  canRelease: boolean;
+}
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
  * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
@@ -48,6 +64,8 @@ export interface Run {
   summaryHeadline?: string | null;
   /** The report's "Verdict: …" line, when it has one. */
   summaryVerdict?: string | null;
+  /** What the report concluded, read by the server. */
+  verdict?: Verdict;
   /** The run's commits are in its job's base branch. Absent on runs returned by actions. */
   merged?: boolean;
   repliedAt: string | null;
@@ -297,6 +315,16 @@ export const api = {
   release: (id: number) => request<Run>("POST", `/api/runs/${id}/release`),
   /** Every run of the run's item, oldest first, with their reports. */
   thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
+  /** Items, newest activity first, optionally one job's or only those waiting on the owner. */
+  items: (options: { jobId?: number; waiting?: boolean; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (options.jobId !== undefined) query.set("jobId", String(options.jobId));
+    if (options.waiting) query.set("waiting", "1");
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    return request<ItemData[]>("GET", `/api/items${query.size ? `?${query}` : ""}`);
+  },
+  /** A run's item, with every run's report. */
+  item: (runId: number) => request<ItemData>("GET", `/api/runs/${runId}/item`),
   changes: (id: number, sinceBase = false) => request<RunChanges>("GET", `/api/runs/${id}/changes${sinceBase ? "?since=base" : ""}`),
   markReplied: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/replied`, { value }),
   markClosed: (id: number, value: boolean) => request<Run>("POST", `/api/runs/${id}/closed`, { value }),

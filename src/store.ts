@@ -100,6 +100,8 @@ export interface Run {
   sessionId: string | null;
   /** What the agent printed (its final report), saved when the run finishes; "" when it printed nothing. */
   summary: string | null;
+  /** Who started or approved it (an API token's name, or "autoRelease"); null when not recorded. */
+  requestedBy: string | null;
   /** When the owner marked the item replied to, or closed it; null otherwise. */
   repliedAt: string | null;
   closedAt: string | null;
@@ -301,6 +303,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "release_instructions", "TEXT"],
   ["jobs", "auto_release", "INTEGER NOT NULL DEFAULT 0"],
   ["jobs", "verify_command", "TEXT"],
+  ["runs", "requested_by", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -308,6 +311,7 @@ type Row = Record<string, SQLInputValue>;
 const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   status: "status",
   agent: "agent",
+  requestedBy: "requested_by",
   summary: "summary",
   sessionId: "session_id",
   repliedAt: "replied_at",
@@ -423,6 +427,7 @@ function toRun(row: Row): Run {
     mode: row.mode === "ask" || row.mode === "ship" || row.mode === "release" ? row.mode : "change",
     itemId: Number(row.item_id ?? row.id),
     sessionId: (row.session_id as string | null) ?? null,
+    requestedBy: (row.requested_by as string | null) ?? null,
     repliedAt: (row.replied_at as string | null) ?? null,
     closedAt: (row.closed_at as string | null) ?? null,
     branch: row.branch as string | null,
@@ -744,6 +749,25 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM runs WHERE worktree = ?")
       .all(worktree)
+      .map((r) => toRun(r as Row));
+  }
+
+  /** Items' ids (their first runs'), newest activity first. */
+  itemIds(options: { jobId?: number; limit?: number } = {}): number[] {
+    const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+    const rows =
+      options.jobId === undefined
+        ? this.db.prepare("SELECT item_id FROM runs GROUP BY item_id ORDER BY MAX(id) DESC LIMIT ?").all(limit)
+        : this.db.prepare("SELECT item_id FROM runs WHERE job_id = ? GROUP BY item_id ORDER BY MAX(id) DESC LIMIT ?").all(options.jobId, limit);
+    return rows.map((row) => Number((row as { item_id: number }).item_id));
+  }
+
+  /** The runs of these items, oldest first. */
+  runsOfItems(itemIds: number[]): Run[] {
+    if (itemIds.length === 0) return [];
+    return this.db
+      .prepare(`SELECT * FROM runs WHERE item_id IN (${itemIds.map(() => "?").join(", ")}) ORDER BY id`)
+      .all(...itemIds)
       .map((r) => toRun(r as Row));
   }
 

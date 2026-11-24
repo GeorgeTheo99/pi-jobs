@@ -143,7 +143,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
    * while the job is paused, but only once the item's work has succeeded (or an earlier release of it
    * finished) and nothing in the item is still running.
    */
-  async release(of: Run, { auto = false } = {}): Promise<Run> {
+  async release(of: Run, { auto = false, expectedHead, requestedBy }: { auto?: boolean; expectedHead?: string; requestedBy?: string } = {}): Promise<Run> {
     const job = this.store.getJob(of.jobId);
     if (!job?.releaseInstructions && !job?.shipCommand) throw new ReleaseRefusedError("This job has no release instructions or ship command");
     const runs = this.store.itemRuns(of.itemId);
@@ -157,12 +157,16 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       throw new ReleaseRefusedError(error.message);
     });
     if (!head) throw new ReleaseRefusedError("Nothing to release: this item has no changes");
+    // The owner approved what they reviewed: a follow-up that landed since must be reviewed too.
+    if (expectedHead && head.commit !== expectedHead) {
+      throw new ReleaseRefusedError(`The item changed since you reviewed it (it is now at ${head.commit.slice(0, 12)}); review it again`);
+    }
     // Checked again after the await above: another release of the item (autoRelease, a second tab) may have been queued meanwhile.
     if (this.store.itemRuns(of.itemId).some((run) => ACTIVE_STATUSES.includes(run.status))) throw new ReleaseRefusedError("Wait for the item's runs to finish");
     if (this.store.countRuns(job.id, WAITING_STATUSES) >= MAX_QUEUED_PER_JOB) {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
-    const how = auto ? "automatically, as the job releases every succeeded result" : "by the owner";
+    const how = auto ? "automatically, as the job releases checked, implemented work" : `by ${requestedBy ?? "the owner"}`;
     let run: Run;
     if (job.releaseInstructions) {
       const agent = job.agent ?? this.store.getSettings().defaultAgent;
@@ -172,17 +176,63 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       run = this.store.createRelease(latest, latest.agent, job.shipCommand!);
       this.note(run.id, `Queued (ship of run #${latest.id}'s item ${how}: ${job.shipCommand})`);
     }
+    this.store.updateRun(run.id, { requestedBy: auto ? "autoRelease" : (requestedBy ?? null) });
     this.pump();
     return this.store.getRun(run.id)!;
   }
 
+  /**
+   * What releasing an item would release, for the owner's confirmation: its newest commit, how far
+   * the base branch on origin has moved since (after a quick fetch) and whether it merges cleanly,
+   * the size of its changes, its check, and how the job releases. Null when it has no changes.
+   */
+  async releasePreview(of: Run) {
+    const job = this.store.getJob(of.jobId);
+    if (!job) return null;
+    const runs = this.store.itemRuns(of.itemId);
+    const head = await this.itemHead(job, runs.at(-1)!);
+    if (!head) return null;
+    let target = job.baseRef;
+    if (await isFetchableBranch(job.repoPath, job.baseRef)) {
+      const branch = baseBranch(job.baseRef);
+      target = `refs/remotes/${REMOTE}/${branch}`;
+      await git(job.repoPath, ["fetch", "--quiet", "--no-tags", REMOTE, `+refs/heads/${branch}:${target}`], 15_000).catch(() => undefined);
+    }
+    const count = async (range: string) => Number(await git(job.repoPath, ["rev-list", "--count", range]).catch(() => "0"));
+    const behind = await count(`${head.commit}..${target}`);
+    const ahead = await count(`${target}..${head.commit}`);
+    const conflicts = behind > 0 && ahead > 0 ? await git(job.repoPath, ["merge-tree", "--write-tree", "--name-only", target, head.commit]).then(() => false, () => true) : false;
+    const stats = (await git(job.repoPath, ["diff", "--numstat", `${target}...${head.commit}`]).catch(() => ""))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("\t"));
+    const work = runs.filter((run) => run.mode !== "ask" && !RELEASE_MODES.includes(run.mode)).at(-1);
+    return {
+      head: head.commit,
+      headLabel: head.label,
+      base: target.replace("refs/remotes/", ""),
+      ahead,
+      behind,
+      conflicts,
+      files: stats.length,
+      additions: stats.reduce((sum, [added]) => sum + (Number(added) || 0), 0),
+      deletions: stats.reduce((sum, [, deleted]) => sum + (Number(deleted) || 0), 0),
+      checkCommand: job.checkCommand,
+      checkStatus: work?.checkStatus ?? null,
+      kind: job.releaseInstructions ? ("agent" as const) : ("script" as const),
+      agent: job.releaseInstructions ? (job.agent ?? this.store.getSettings().defaultAgent) : null,
+      instructions: job.releaseInstructions ?? job.shipCommand ?? "",
+      verifyCommand: job.verifyCommand,
+    };
+  }
+
   /** Queues a run that was waiting for approval; null when the run isn't waiting. */
-  approve(runId: number): Run | null {
+  approve(runId: number, requestedBy?: string): Run | null {
     const run = this.store.getRun(runId);
     if (run?.status !== "awaiting_approval") return null;
     if (!this.store.getJob(run.jobId)?.enabled) throw new JobPausedError("Job is paused; resume it to approve its runs");
-    this.store.updateRun(runId, { status: "queued" });
-    this.note(runId, "Approved; queued");
+    this.store.updateRun(runId, { status: "queued", requestedBy: requestedBy ?? null });
+    this.note(runId, requestedBy ? `Approved by ${requestedBy}; queued` : "Approved; queued");
     this.pump();
     return this.store.getRun(runId);
   }
