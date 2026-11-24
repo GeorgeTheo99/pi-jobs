@@ -117,3 +117,9 @@ test("a ship joins its item: shipped once it succeeds; Ship needs a command, cha
   const [released] = groupItems([work, failedRelease, run({ id: 3, followUpOf: 2, trigger: "manual", mode: "release", instructions: "Release it" })]);
   expect(released!.state).toBe("shipped");
 });
+
+test("a command run's output is never read as an agent's verdict", () => {
+  const [item] = groupItems([run({ id: 9, mode: "command", agent: "command", summary: "Needs your decision: disk almost full" })]);
+  expect(item!.verdict).toBe("unknown");
+  expect(item!.state).toBe("closed");
+});

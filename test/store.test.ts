@@ -51,7 +51,7 @@ test("runs from before items were stored get their item from the run they retry 
   const file = path.join(dir, "items.db");
   const first = new Store(file);
   const job = first.createJob(
-    { name: "j", repoPath: dir, baseRef: "main", prompt: "p", agent: null, schedule: null, timeoutMinutes: 5, checkCommand: null,
+    { name: "j", kind: "agent", command: null, repoPath: dir, baseRef: "main", prompt: "p", agent: null, schedule: null, timeoutMinutes: 5, checkCommand: null,
       pushBranch: false, catchUp: true, retries: 0, watchCommand: null, approveRuns: false, shipCommand: null, releaseInstructions: null, autoRelease: false, enabled: true },
     null,
   );

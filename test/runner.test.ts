@@ -1033,3 +1033,64 @@ test("releaseOutcome reads the report's Released line", async () => {
   assert.match(releaseOutcome("I pushed it") ?? "", /doesn't say "Released"/);
   assert.match(releaseOutcome("## Released 1.0 (from cat CHANGELOG.md)\n...\nNot released: tests failed") ?? "", /did not release/, "the report at the end wins");
 });
+
+test("a command job runs its shell command in its directory, without a worktree or branch", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const dir = path.join(ctx.root, "plain-dir");
+  execFileSync("mkdir", ["-p", dir]);
+  const job = ctx.store.createJob(
+    ctx.jobInput({ kind: "command", command: 'printf "%s|%s|%s" "$PWD" "$PI_JOBS_TRIGGER" "$PI_JOBS_PAYLOAD" > out.txt; echo done', repoPath: dir, baseRef: "", prompt: "" }),
+    null,
+  );
+  const result = ctx.runner.trigger(job, "webhook", '{"id":1}');
+  assert.ok("run" in result);
+  assert.equal(result.run.mode, "command");
+  assert.equal(result.run.agent, "command");
+  const run = await waitForFinish(ctx.runner, result.run.id);
+  assert.equal(run.status, "succeeded", run.error ?? "");
+  assert.equal(run.exitCode, 0);
+  assert.equal(run.branch, null);
+  assert.equal(run.worktree, null);
+  assert.equal(run.summary, "done");
+  const [cwd, trigger, payload] = readFileSync(path.join(dir, "out.txt"), "utf8").split("|");
+  assert.equal(execFileSync("realpath", [cwd!], { encoding: "utf8" }).trim(), execFileSync("realpath", [dir], { encoding: "utf8" }).trim());
+  assert.equal(trigger, "webhook");
+  assert.equal(payload, '{"id":1}');
+  assert.equal(existsSync(path.join(ctx.root, "state", "worktrees", `job-${job.id}`)), false);
+  assert.throws(() => ctx.runner.followUp(run, "again"), /no agent/);
+
+  // A payload too big for the environment arrives in a file instead.
+  const big = JSON.stringify({ id: 2, body: "x".repeat(70 * 1024) });
+  const second = ctx.store.createJob(ctx.jobInput({ name: "Big", kind: "command", command: 'test -z "$PI_JOBS_PAYLOAD" && wc -c < "$PI_JOBS_PAYLOAD_FILE"', repoPath: dir }), null);
+  const bigResult = ctx.runner.trigger(second, "webhook", big);
+  assert.ok("run" in bigResult);
+  const bigRun = await waitForFinish(ctx.runner, bigResult.run.id);
+  assert.equal(bigRun.status, "succeeded", bigRun.error ?? "");
+  assert.equal(Number(bigRun.summary), Buffer.byteLength(big));
+  await assert.rejects(ctx.runner.ship(run), ShipRefusedError);
+});
+
+test("a failing command job is retried; a timed-out one is stopped", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const failing = ctx.store.createJob(ctx.jobInput({ name: "Fails", kind: "command", command: "exit 3", retries: 1 }), null);
+  const result = ctx.runner.trigger(failing, "manual");
+  assert.ok("run" in result);
+  const first = await waitForFinish(ctx.runner, result.run.id);
+  assert.equal(first.status, "failed");
+  assert.equal(first.exitCode, 3);
+  assert.match(first.error ?? "", /code 3/);
+  const retry = ctx.store.listRuns({ jobId: failing.id }).find((r) => r.retryOf === first.id);
+  assert.ok(retry, "a retry was queued");
+  assert.equal(retry.mode, "command");
+  ctx.runner.cancel(retry.id);
+
+  const slow = ctx.store.createJob(ctx.jobInput({ name: "Slow", kind: "command", command: "sleep 30" }), null);
+  const started = ctx.runner.trigger(slow, "manual");
+  assert.ok("run" in started);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  ctx.runner.cancel(started.run.id);
+  const canceled = await waitForFinish(ctx.runner, started.run.id);
+  assert.equal(canceled.status, "canceled");
+});

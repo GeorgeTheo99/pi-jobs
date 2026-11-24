@@ -1,7 +1,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { readFile, rm, rmdir } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -17,6 +17,8 @@ export const WATCH_TIMEOUT_MS = 120_000;
 const MAX_WATCH_OUTPUT = 1024 * 1024;
 const MAX_ITEM_ID = 200;
 const MAX_PAYLOAD_IN_PROMPT = 20_000;
+/** A command job's payload larger than this is passed in a file (PI_JOBS_PAYLOAD_FILE), not the environment. */
+const MAX_PAYLOAD_ENV = 64 * 1024;
 /** How much of the earlier run's output a follow-up's prompt carries. */
 const MAX_PREVIOUS_OUTPUT = 12_000;
 /** How much of the agent's output a run keeps as its summary (the end, where agents report). */
@@ -60,6 +62,8 @@ export class QueueFullError extends Error {}
 export class JobPausedError extends Error {}
 /** Why an item can't be shipped now. */
 export class ShipRefusedError extends Error {}
+/** Command jobs' runs can't be followed up: there is no agent or result to continue. */
+export class FollowUpRefusedError extends Error {}
 /** A run's agent is no longer in Settings: retrying can't help. */
 class AgentMissingError extends Error {}
 
@@ -162,7 +166,7 @@ export const PI_NEW_SESSION = /^Warning: No project session found with id '[^']*
 
 /**
  * What the agent printed: the log between pi-jobs' "Starting" note and the agent's exit, without the
- * check's output. For a ship run, what its ship command printed.
+ * check's output. For a ship or command run, what its command printed.
  */
 export function agentOutput(log: string): string {
   const note = /^\[pi-jobs [^\]]*\] /;
@@ -170,7 +174,7 @@ export function agentOutput(log: string): string {
   const start = lines.findIndex((line) => note.test(line) && line.replace(note, "").startsWith("Starting "));
   if (start === -1) return "";
   const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => note.test(line) && /^(Agent exited|Ship command exited|Running check:)/.test(line.replace(note, "")));
+  const end = rest.findIndex((line) => note.test(line) && /^(Agent exited|Ship command exited|Command exited|Running check:)/.test(line.replace(note, "")));
   return (end === -1 ? rest : rest.slice(0, end))
     .filter((line) => !note.test(line) && !PI_NEW_SESSION.test(line))
     .join("\n")
@@ -316,10 +320,12 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     if (this.store.countRuns(job.id, WAITING_STATUSES) >= MAX_QUEUED_PER_JOB) {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
-    const agent = job.agent ?? this.store.getSettings().defaultAgent;
+    const command = job.kind === "command";
+    // A command run has no agent; "command" stands in, so the run's record says what ran it.
+    const agent = command ? "command" : (job.agent ?? this.store.getSettings().defaultAgent);
     const approval = job.approveRuns && trigger !== "manual";
-    const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued");
-    this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, agent: ${agent})`);
+    const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued", command ? "command" : "change");
+    this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, ${command ? "command job" : `agent: ${agent}`})`);
     if (pump) this.pump();
     return { run: this.store.getRun(run.id)! };
   }
@@ -344,6 +350,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
     const job = this.store.getJob(previous.jobId);
+    if (job?.kind === "command" || previous.mode === "command") throw new FollowUpRefusedError("A command job's runs have no agent to follow up with");
     const agent = job?.agent ?? this.store.getSettings().defaultAgent;
     const run = this.store.createFollowUp(previous, agent, instructions, mode);
     this.note(run.id, `Queued (${mode === "ask" ? "question" : "follow-up"} on run #${previous.id}, agent: ${agent})`);
@@ -359,6 +366,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
    */
   async ship(of: Run, { auto = false } = {}): Promise<Run> {
     const job = this.store.getJob(of.jobId);
+    if (job?.kind === "command") throw new ShipRefusedError("A command job's runs have nothing to release");
     if (!job?.releaseInstructions && !job?.shipCommand) throw new ShipRefusedError("This job has no release instructions or ship command");
     const runs = this.store.itemRuns(of.itemId);
     if (runs.some((run) => ACTIVE_STATUSES.includes(run.status))) throw new ShipRefusedError("Wait for the item's runs to finish");
@@ -606,6 +614,10 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
         await this.executeShip(job, run, active, deadline);
         return;
       }
+      if (run.mode === "command") {
+        await this.executeCommand(job, run, active, deadline);
+        return;
+      }
       const ask = run.mode === "ask";
       const release = run.mode === "release";
       // Every run of an item works in the same place, so the agent's session (kept per directory) carries over.
@@ -808,6 +820,47 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     }
   }
 
+  /**
+   * A command job's run: its shell command in the job's directory, as is (no checkout, branch or
+   * commit), with the payload in PI_JOBS_PAYLOAD. A failure or timeout is retried like an agent's.
+   */
+  private async executeCommand(job: Job, run: Run, active: ActiveRun, deadline: number): Promise<void> {
+    let exitCode: number | null = null;
+    if (!job.command) throw new Error("This job has no command");
+    if (!existsSync(job.repoPath)) throw new Error(`The directory ${job.repoPath} doesn't exist`);
+    if (!active.stopReason) {
+      this.note(run.id, `Starting command in ${job.repoPath}: ${job.command}`);
+      const env: Record<string, string> = { PI_JOBS_TRIGGER: run.trigger, PI_JOBS_ATTEMPT: String(run.attempt) };
+      // A payload too big for the environment (macOS caps arguments plus environment near 1 MB) goes in a file.
+      if (run.payload && Buffer.byteLength(run.payload) <= MAX_PAYLOAD_ENV) env.PI_JOBS_PAYLOAD = run.payload.replaceAll("\0", "");
+      else if (run.payload) {
+        const file = path.join(this.logDir, `${run.id}.payload`);
+        writeFileSync(file, run.payload, { mode: 0o600 });
+        env.PI_JOBS_PAYLOAD_FILE = file;
+      }
+      // The directory is shared, unlike a worktree: never sweep processes by working directory.
+      exitCode = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.command], job.repoPath, deadline, env, { sweepCwd: false });
+      this.store.updateRun(run.id, { exitCode });
+      this.note(run.id, `Command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
+    }
+    const status: RunStatus = active.stopReason
+      ? active.stopReason === "timed_out"
+        ? "timed_out"
+        : active.stopReason === "canceled"
+          ? "canceled"
+          : "failed"
+      : exitCode === 0
+        ? "succeeded"
+        : "failed";
+    const error =
+      active.stopReason === "interrupted"
+        ? "The server stopped while this run was in progress"
+        : status === "failed"
+          ? `The command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`
+          : null;
+    this.finish(run.id, { status, error }, status === "timed_out" || (status === "failed" && active.stopReason !== "canceled"));
+  }
+
   /** The command line of a run's agent, from Settings. */
   private agentCommand(agent: string): string {
     const { agents } = this.store.getSettings();
@@ -979,6 +1032,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
     cwd: string,
     deadline: number,
     extraEnv: Record<string, string> = {},
+    { sweepCwd = true } = {},
   ): Promise<number | null> {
     const fd = openSync(this.logPath(runId), "a");
     let child: ChildProcess;
@@ -1024,7 +1078,7 @@ export class Runner extends EventEmitter<{ finished: [Run] }> {
           // Reap anything left running: the agent's own group, plus processes it started in other
           // sessions (Pi's bash tool detaches each command).
           signalGroup(child.pid, "SIGKILL");
-          void killRunProcesses(active.token, realCwd).finally(() => resolve(code));
+          void killRunProcesses(active.token, sweepCwd ? realCwd : null).finally(() => resolve(code));
         }),
       );
     });
@@ -1179,9 +1233,9 @@ export function signalGroup(pid: number | undefined, signal: NodeJS.Signals): vo
 /**
  * SIGKILLs every process left over from a run: those that inherited its PI_JOBS_RUN_TOKEN (macOS
  * `ps -E`; platform binaries hide their environment) and those whose working directory is inside
- * the run's worktree.
+ * the run's worktree (unless it is null: a command job's directory is shared).
  */
-export async function killRunProcesses(token: string, worktree: string): Promise<void> {
+export async function killRunProcesses(token: string, worktree: string | null): Promise<void> {
   const pids = new Set<number>();
   const marker = `PI_JOBS_RUN_TOKEN=${token}`;
   for (const line of (await commandOutput("ps", ["-AEww", "-o", "pid=,command="])).split("\n")) {
@@ -1189,7 +1243,7 @@ export async function killRunProcesses(token: string, worktree: string): Promise
   }
   // lsof -F prints "p<pid>" then "n<cwd>" for each process.
   let pid = 0;
-  for (const line of (await commandOutput("lsof", ["-nP", "-d", "cwd", "-Fpn"])).split("\n")) {
+  for (const line of worktree === null ? [] : (await commandOutput("lsof", ["-nP", "-d", "cwd", "-Fpn"])).split("\n")) {
     if (line.startsWith("p")) pid = Number(line.slice(1));
     else if (line.startsWith("n") && (line.slice(1) === worktree || line.startsWith(`n${worktree}/`))) pids.add(pid);
   }

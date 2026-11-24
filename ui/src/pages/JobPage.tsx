@@ -21,9 +21,11 @@ import { useItems } from "@/lib/useItems";
 
 const EMPTY_DRAFT: JobDraft = {
   name: "",
+  kind: "agent",
   repoPath: "",
   baseRef: "main",
   prompt: "",
+  command: "",
   agent: null,
   schedule: "",
   webhookEnabled: false,
@@ -77,7 +79,12 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
     setError(null);
     setFields({});
     try {
-      const saved = job ? await api.updateJob(job.id, draft) : await api.createJob(draft);
+      // A command job has no agent, checks or release: drop anything set while the form was in Agent mode.
+      const body: JobDraft =
+        draft.kind === "command"
+          ? { ...draft, agent: null, baseRef: "", prompt: "", checkCommand: "", watchCommand: "", pushBranch: false, shipCommand: "", releaseInstructions: "", autoRelease: false }
+          : { ...draft, command: "" };
+      const saved = job ? await api.updateJob(job.id, body) : await api.createJob(body);
       onSaved(saved);
       setSavedAt(Date.now());
       if (!job) navigate(`/jobs/${saved.id}`, { replace: true });
@@ -100,7 +107,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
   };
 
   const remove = async () => {
-    if (!job || !window.confirm(`Delete "${job.name}" and its run history? Branches it created stay in the repo.`)) return;
+    if (!job || !window.confirm(`Delete "${job.name}" and its run history?${job.kind === "command" ? "" : " Branches it created stay in the repo."}`)) return;
     try {
       await api.deleteJob(job.id);
       navigate("/jobs");
@@ -109,6 +116,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
     }
   };
 
+  const isCommand = draft.kind === "command";
   const defaultAgent = settings.data?.defaultAgent;
   // Settings' agents (built-ins, then added Pi launchers and the like), plus the job's own if it was since removed.
   const agentIds = Object.keys(settings.data?.agents ?? { pi: null, claude: null, codex: null });
@@ -144,11 +152,75 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
         <EditSection open={!job}>
         <form onSubmit={(e) => void submit(e)} className="grid max-w-[760px] gap-7" noValidate>
           <Section title="What">
+            {!job && (
+              <div className="grid gap-2">
+                <div role="radiogroup" aria-label="Kind of job" className="segmented justify-self-start">
+                  <SegmentButton checked={!isCommand} onClick={() => set("kind", "agent")}>
+                    Agent
+                  </SegmentButton>
+                  <SegmentButton checked={isCommand} onClick={() => set("kind", "command")}>
+                    Command
+                  </SegmentButton>
+                </div>
+                <p className="text-[12px] text-fog">
+                  {isCommand
+                    ? "Runs a shell command in a directory on its triggers, like a cron or launchd job: no agent, worktree or branch. Its output and exit code are the run."
+                    : "Runs a coding agent in a fresh worktree of a git repository and leaves its changes on a branch for review."}
+                </p>
+                {fields.kind && <p className="text-[12px] text-red">{fields.kind}</p>}
+              </div>
+            )}
             <Field label="Name" error={fields.name}>
               {(p) => (
-                <input {...p} className="field" value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="Check for new gateway models" />
+                <input
+                  {...p}
+                  className="field"
+                  value={draft.name}
+                  onChange={(e) => set("name", e.target.value)}
+                  placeholder={isCommand ? "Nightly backup" : "Check for new gateway models"}
+                />
               )}
             </Field>
+            {isCommand ? (
+              <>
+                <Field label="Directory" error={fields.repoPath} hint="Absolute path the command runs in. It doesn't need to be a git repository.">
+                  {(p) => (
+                    <input
+                      {...p}
+                      className="field font-mono text-[13px]"
+                      value={draft.repoPath}
+                      onChange={(e) => set("repoPath", e.target.value)}
+                      placeholder="/Users/me/local_code/backups"
+                      spellCheck={false}
+                      autoCapitalize="off"
+                    />
+                  )}
+                </Field>
+                <Field
+                  label="Command"
+                  error={fields.command}
+                  hint={
+                    <>
+                      Run with <code className="font-mono text-bone">/bin/sh -c</code> as you, with the server's PATH. A webhook's body is in{" "}
+                      <code className="font-mono text-bone">PI_JOBS_PAYLOAD</code>. A non-zero exit fails the run.
+                    </>
+                  }
+                >
+                  {(p) => (
+                    <textarea
+                      {...p}
+                      className="field min-h-[96px] resize-y font-mono text-[13px] leading-relaxed"
+                      value={draft.command}
+                      onChange={(e) => set("command", e.target.value)}
+                      placeholder="python3 backup.py run"
+                      spellCheck={false}
+                      autoCapitalize="off"
+                    />
+                  )}
+                </Field>
+              </>
+            ) : (
+              <>
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
               <Field label="Repository" error={fields.repoPath} hint="Absolute path to a local git checkout.">
                 {(p) => (
@@ -196,8 +268,11 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 />
               )}
             </Field>
+              </>
+            )}
           </Section>
 
+          {!isCommand && (
           <Section title="Agent">
             <div role="radiogroup" aria-label="Agent" className="segmented">
               <SegmentButton checked={draft.agent === null} onClick={() => set("agent", null)}>
@@ -211,6 +286,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             </div>
             {fields.agent && <p className="text-[12px] text-red">{fields.agent}</p>}
           </Section>
+          )}
 
           <Section title="Triggers">
             <ScheduleField value={draft.schedule} error={fields.schedule} onChange={(v) => set("schedule", v)} />
@@ -231,6 +307,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               />
               {draft.webhookEnabled && <WebhookDetails job={job} onRotated={onSaved} />}
             </div>
+            {!isCommand && (
             <Field
               label="Watch command"
               error={fields.watchCommand}
@@ -253,17 +330,19 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 />
               )}
             </Field>
+            )}
             {job?.watchCommand && <WatchStatus job={job} />}
             <ToggleRow
               label="Approve before running"
-              hint="Runs started by the schedule, webhook or watch wait as Needs approval until you approve or dismiss them. Manual runs start right away."
+              hint={`Runs started by the schedule${isCommand ? " or webhook" : ", webhook or watch"} wait as Needs approval until you approve or dismiss them. Manual runs start right away.`}
               checked={draft.approveRuns}
               onChange={(v) => set("approveRuns", v)}
             />
           </Section>
 
           <Section title="Limits and checks">
-            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_140px_140px]">
+            <div className={`grid gap-4 ${isCommand ? "sm:grid-cols-[140px_140px]" : "sm:grid-cols-[minmax(0,1fr)_140px_140px]"}`}>
+              {!isCommand && (
               <Field label="Check command" error={fields.checkCommand} hint="Optional. Runs in the worktree after the agent; a non-zero exit fails the run.">
                 {(p) => (
                   <input
@@ -277,6 +356,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                   />
                 )}
               </Field>
+              )}
               <Field label="Timeout (minutes)" error={fields.timeoutMinutes}>
                 {(p) => (
                   <input
@@ -305,15 +385,17 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               </Field>
             </div>
             <p className="-mt-2 text-[12px] leading-snug text-fog">
-              A run that fails or times out is tried again after 1 minute, then 4, 16 and so on. Canceled runs and failed checks or
-              pushes are not retried.
+              A run that fails or times out is tried again after 1 minute, then 4, 16 and so on. Canceled runs
+              {isCommand ? "" : " and failed checks or pushes"} are not retried.
             </p>
+            {!isCommand && (
             <ToggleRow
               label="Push the result branch"
               hint="After a successful run with changes, push its branch to the repository's origin so any machine can fetch it. If origin is GitHub, the branch becomes visible there."
               checked={draft.pushBranch}
               onChange={(v) => set("pushBranch", v)}
             />
+            )}
             <ToggleRow
               label="Enabled"
               hint="Paused jobs ignore their schedule and webhook. You can still run them by hand."
@@ -322,6 +404,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             />
           </Section>
 
+          {!isCommand && (
           <Section title="Release">
             <p className="-mt-1 text-[13px] leading-snug text-fog">
               How a finished item goes out, like merging an approved pull request. Either gives finished items with changes an{" "}
@@ -367,6 +450,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             />
             {fields.autoRelease && <p className="-mt-3 text-[12px] text-red">{fields.autoRelease}</p>}
           </Section>
+          )}
 
           <div className="flex flex-wrap items-center gap-3 border-t border-steel/35 pt-5">
             <button type="submit" className="btn btn-primary" disabled={saving}>
@@ -401,7 +485,7 @@ function JobItems({ job }: { job: Job }) {
     job.watchCommand && job.watchCheckedAt ? `checked ${relativeTime(job.watchCheckedAt, now)}` : null,
     job.webhookToken ? "Webhook on" : null,
     job.approveRuns ? "Runs wait for approval" : null,
-    `${agentLabel(job.effectiveAgent)} on ${job.baseRef}`,
+    job.kind === "command" ? `Command in ${job.repoPath}` : `${agentLabel(job.effectiveAgent)} on ${job.baseRef}`,
   ].filter(Boolean);
   return (
     <section className="grid gap-3">

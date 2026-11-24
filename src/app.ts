@@ -9,7 +9,7 @@ import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, agentLabel, buildAr
 import { applyAction, type CallApi } from "./actions.ts";
 import { ChatBusyError, type ChatRunner } from "./chat.ts";
 import type { Config } from "./config.ts";
-import { JobPausedError, QueueFullError, ShipRefusedError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
+import { FollowUpRefusedError, JobPausedError, QueueFullError, ShipRefusedError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
 import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Chat, type Job, type JobInput, type Settings, type Store } from "./store.ts";
@@ -68,7 +68,7 @@ export function createApp(deps: AppDeps) {
 
   const jobView = (job: Job, latest = store.latestRuns().get(job.id) ?? null) => ({
     ...job,
-    effectiveAgent: job.agent ?? store.getSettings().defaultAgent,
+    effectiveAgent: job.kind === "command" ? "command" : (job.agent ?? store.getSettings().defaultAgent),
     nextRunAt: scheduler.nextRun(job.id),
     lastRun: latest,
     webhookPath: `/api/hooks/${job.id}`,
@@ -236,7 +236,9 @@ export function createApp(deps: AppDeps) {
         const runIds = store.runIdsForJob(job.id);
         scheduler.remove(job.id);
         store.deleteJob(job.id);
-        await Promise.all(runIds.map((runId) => rm(runner.logPath(runId), { force: true })));
+        await Promise.all(
+          runIds.flatMap((runId) => [rm(runner.logPath(runId), { force: true }), rm(runner.logPath(runId).replace(/\.log$/, ".payload"), { force: true })]),
+        );
         return { ok: true };
       },
     ],
@@ -395,6 +397,7 @@ export function createApp(deps: AppDeps) {
           return runner.followUp(previous, instructions, body.mode === "ask" ? "ask" : "change");
         } catch (error) {
           if (error instanceof QueueFullError) throw new HttpError(429, error.message);
+          if (error instanceof FollowUpRefusedError) throw new HttpError(409, error.message);
           throw error;
         }
       },
@@ -639,19 +642,41 @@ async function validateJob(body: Record<string, unknown>, settings: Settings, ex
   if (!name) fields.name = "Name is required";
   else if (name.length > 80) fields.name = "Keep the name under 80 characters";
 
+  // A job's kind is fixed once created: its runs, items and fields mean different things.
+  const kind = existing?.kind ?? (body.kind === undefined ? "agent" : body.kind);
+  if (kind !== "agent" && kind !== "command") fields.kind = 'Use "agent" or "command"';
+  else if (existing && body.kind !== undefined && body.kind !== existing.kind) fields.kind = "A job's kind can't be changed; create a new job";
+  const isCommand = kind === "command";
+
   const repoPath = text("repoPath").replace(/^~(?=$|\/)/, os.homedir());
-  if (!path.isAbsolute(repoPath)) fields.repoPath = "Use an absolute path to a git repository";
+  if (isCommand) {
+    if (!path.isAbsolute(repoPath)) fields.repoPath = "Use an absolute path to the directory to run in";
+    else if (!(await stat(repoPath).then((s) => s.isDirectory(), () => false))) fields.repoPath = "Not a directory";
+  } else if (!path.isAbsolute(repoPath)) fields.repoPath = "Use an absolute path to a git repository";
   else if (!(await isGitRepo(repoPath))) fields.repoPath = "Not a git repository";
 
-  const baseRef = text("baseRef") || "HEAD";
-  if (!fields.repoPath && !(await resolvesToCommit(repoPath, baseRef))) {
+  const baseRef = isCommand ? "" : text("baseRef") || "HEAD";
+  if (!isCommand && !fields.repoPath && !(await resolvesToCommit(repoPath, baseRef))) {
     fields.baseRef = `"${baseRef}" does not resolve to a commit in this repository`;
   }
 
-  const prompt = text("prompt");
-  if (!prompt) fields.prompt = "Tell the agent what to do";
+  const prompt = isCommand ? "" : text("prompt");
+  if (!isCommand && !prompt) fields.prompt = "Tell the agent what to do";
+  // Like the watch command: clients that leave it out (older ones) keep the job's.
+  const command = isCommand ? (body.command === undefined ? (existing?.command ?? "") : text("command")) : null;
+  if (isCommand && !command) fields.command = "Say what to run";
+  if (!isCommand && text("command")) fields.command = "Only command jobs run a command";
+  else if (command && command.length > 4000) fields.command = "Keep the command under 4,000 characters";
+  if (isCommand) {
+    // These belong to agent runs: a command job has no checkout to check, branch to push or result to release.
+    const agentOnly = ["checkCommand", "watchCommand", "shipCommand", "releaseInstructions"] as const;
+    for (const key of agentOnly) if (text(key)) fields[key] = "Command jobs don't use this";
+    if (body.pushBranch === true) fields.pushBranch = "Command jobs don't use this";
+    if (body.autoRelease === true) fields.autoRelease = "Command jobs don't use this";
+    if (body.agent != null) fields.agent = "Command jobs don't use an agent";
+  }
 
-  const agent = body.agent ?? null;
+  const agent = isCommand ? null : (body.agent ?? null);
   // A job keeps an agent that was since removed from Settings until it is changed; its runs say so.
   if (agent !== null && (typeof agent !== "string" || (!Object.hasOwn(settings.agents, agent) && agent !== existing?.agent))) {
     fields.agent = `Choose one of ${Object.keys(settings.agents).join(", ")}, or the default`;
@@ -694,9 +719,11 @@ async function validateJob(body: Record<string, unknown>, settings: Settings, ex
   if (Object.keys(fields).length > 0) throw new HttpError(400, "Fix the highlighted fields", fields);
   return {
     name,
+    kind: kind as JobInput["kind"],
     repoPath,
     baseRef,
     prompt,
+    command,
     agent: agent as JobInput["agent"],
     schedule,
     timeoutMinutes,

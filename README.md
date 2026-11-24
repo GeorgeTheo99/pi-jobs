@@ -5,7 +5,8 @@ web UI to manage jobs, schedules and runs. It runs [Pi](https://pi.dev) by
 default; Claude Code, Codex and your own launchers (a Pi launcher with its own model, say) are
 selectable per job, per chat or as the default in Settings. From any Pi
 session, [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s `jobs_*` tools create, change,
-run and inspect jobs in natural language.
+run and inspect jobs in natural language. [Command jobs](#command-jobs) run any shell command on
+the same triggers, in place of cron or launchd jobs.
 
 Each run works in a fresh git worktree, runs your check command, and leaves its changes on a
 branch for review, like a pull request. **Approve & release** then has the agent release it the
@@ -65,6 +66,32 @@ Runs never merge or deploy ([releasing](#release) is the owner's step). Before t
 `origin` does with new branches: deploy hooks that act on any branch, or a public host where the
 branch becomes visible. Review a branch with the command shown on its run page, then merge it
 yourself.
+
+## Command jobs
+
+A job's kind is **Agent** (the default, everything above) or **Command**, chosen when it is
+created and fixed after. A command job runs a shell command on its triggers, like a cron or launchd
+job, with pi-jobs' schedules (with catch-up), webhooks, approval, timeouts, retries, logs and
+history:
+
+- **What runs:** `/bin/sh -c <command>`, as you, in the job's directory (any directory, not only a
+  git repository), with the server's environment. There is no agent, worktree, branch or commit:
+  the command works on that directory as is.
+- **Environment:** `PI_JOBS_RUN_ID`, `PI_JOBS_JOB_ID`, `PI_JOBS_TRIGGER`, `PI_JOBS_ATTEMPT`, and
+  for a webhook, its body in `PI_JOBS_PAYLOAD` (over 64 KiB, in the file named by
+  `PI_JOBS_PAYLOAD_FILE` instead).
+- **Which command:** the job's command as it is when the run starts, so an edit applies to runs
+  already queued or waiting for approval.
+- **Outcome:** exit 0 succeeds; anything else fails and is retried like an agent run. The run page
+  shows the end of what it printed; the log has all of it.
+- **Not for command jobs:** an agent, instructions, base ref, check, watch or ship command, release
+  instructions, branch pushes, Ask and Make changes. **Chat about it** works.
+- **Stopping:** cancel and timeouts kill the command's process group and anything that inherited
+  the run's `PI_JOBS_RUN_TOKEN`. Unlike an agent's worktree, the directory is shared, so processes
+  are never found by their working directory.
+
+The API takes `"kind": "command"` and `"command"` in the job body (`repoPath` is the directory);
+`baseRef` and `prompt` come back empty.
 
 ## Triggers
 

@@ -65,10 +65,11 @@ function toItem(runs: Run[]): Item {
   const work = runs.filter((run) => run.mode !== "ask");
   const finished = [...work].reverse().find((run) => !isOpen(run)) ?? null;
   const withChanges = [...runs].reverse().find((run) => (run.commits ?? 0) > 0) ?? null;
-  // Lists carry the report's headline and verdict line, not the whole report.
-  const verdict = parseVerdict(
-    finished?.summary ?? ([finished?.summaryHeadline, finished?.summaryVerdict].filter(Boolean).join("\n") || null),
-  );
+  // Lists carry the report's headline and verdict line, not the whole report. A command prints output, not a verdict.
+  const verdict =
+    finished?.mode === "command"
+      ? "unknown"
+      : parseVerdict(finished?.summary ?? ([finished?.summaryHeadline, finished?.summaryVerdict].filter(Boolean).join("\n") || null));
   return {
     root,
     runs,

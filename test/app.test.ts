@@ -521,3 +521,43 @@ test("ship: the job keeps its ship command across older clients' updates; POST /
   assert.equal(refused.status, 409);
   assert.match(refused.json.error, /no release instructions or ship command/);
 });
+
+test("command jobs run in any directory, need a command, refuse agent-only fields and keep their kind", async (t) => {
+  const app = await startApp(t);
+  const dir = path.join(app.root, "scripts");
+  mkdirSync(dir);
+  const missing = await app.call("POST", "/api/jobs", { name: "Backup", kind: "command", repoPath: dir });
+  assert.equal(missing.status, 400);
+  assert.match(missing.json.fields.command, /what to run/);
+  const notDir = await app.call("POST", "/api/jobs", { name: "Backup", kind: "command", repoPath: path.join(dir, "nope"), command: "true" });
+  assert.match(notDir.json.fields.repoPath, /Not a directory/);
+  const agentOnly = await app.call("POST", "/api/jobs", { name: "Backup", kind: "command", repoPath: dir, command: "true", checkCommand: "x", pushBranch: true, agent: "pi" });
+  assert.deepEqual(Object.keys(agentOnly.json.fields).sort(), ["agent", "checkCommand", "pushBranch"]);
+  const badKind = await app.call("POST", "/api/jobs", { name: "Backup", kind: "cron", repoPath: dir, command: "true" });
+  assert.match(badKind.json.fields.kind, /agent/);
+
+  const created = await app.call("POST", "/api/jobs", { name: "Backup", kind: "command", repoPath: dir, command: "echo hi", schedule: "0 21 * * *" });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  assert.deepEqual([created.json.kind, created.json.command, created.json.baseRef, created.json.prompt, created.json.agent], ["command", "echo hi", "", "", null]);
+  const moved = await app.call("PUT", `/api/jobs/${created.json.id}`, { ...created.json, kind: "agent" });
+  assert.match(moved.json.fields.kind, /can't be changed/);
+  const renamed = await app.call("PUT", `/api/jobs/${created.json.id}`, { ...created.json, name: "Nightly backup" });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.json));
+  assert.equal(renamed.json.kind, "command");
+  assert.equal(renamed.json.effectiveAgent, "command");
+  // Older clients (pi-shared's jobs_update) leave kind and command out; their updates keep both.
+  const { kind: _k, command: _c, ...older } = renamed.json;
+  const kept = await app.call("PUT", `/api/jobs/${created.json.id}`, { ...older, schedule: "0 22 * * *" });
+  assert.equal(kept.status, 200, JSON.stringify(kept.json));
+  assert.deepEqual([kept.json.kind, kept.json.command, kept.json.schedule], ["command", "echo hi", "0 22 * * *"]);
+  const agentWithCommand = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", command: "echo" });
+  assert.match(agentWithCommand.json.fields.command, /Only command jobs/);
+
+  const run = (await app.call("POST", `/api/jobs/${created.json.id}/run`, {})).json;
+  const finished = await waitForFinish(app.runner, run.id);
+  assert.equal(finished.status, "succeeded", finished.error ?? "");
+  const followUp = await app.call("POST", `/api/runs/${run.id}/follow-up`, { instructions: "again" });
+  assert.equal(followUp.status, 409);
+  const ship = await app.call("POST", `/api/runs/${run.id}/ship`, {});
+  assert.equal(ship.status, 409);
+});

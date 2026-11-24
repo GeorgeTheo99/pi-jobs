@@ -22,7 +22,9 @@ const PILL_CLASSES: Record<ItemState, string> = {
 /** An item's state; finished items with a verdict say it ("Implemented", "Can't reproduce"). */
 export function ItemPill({ item }: { item: Item }) {
   const label =
-    item.state === "review" && item.verdict !== "unknown"
+    item.state === "closed" && item.latestWork.mode === "command" && item.latestWork.status === "succeeded" && item.latestWork.closedAt === null
+      ? "Succeeded"
+      : item.state === "review" && item.verdict !== "unknown"
       ? VERDICT_LABELS[item.verdict]
       : item.state === "closed" && item.verdict !== "unknown" && item.latest.closedAt === null
         ? VERDICT_LABELS[item.verdict]
@@ -145,7 +147,9 @@ export function WaitingCard({ item, job, onChanged }: { item: Item; job: Job | u
           {item.state === "approval"
             ? paused
               ? "The job is paused. Resume it to approve."
-              : `${agentLabel(run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
+              : run.mode === "command"
+                ? `Command in ${job ? repoName(job.repoPath) : "its directory"}`
+                : `${agentLabel(run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
             : "Proposal on a branch"}
         </span>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">

@@ -148,7 +148,7 @@ export function RunPage() {
 
       {item.withChanges?.branch && itemFinished && <Changes key={`changes-${item.withChanges.id}`} run={item.withChanges} job={job} wholeBranch />}
 
-      {!waiting && (
+      {!waiting && job?.kind !== "command" && run.mode !== "command" && (
         <Composer
           key={`composer-${item.root.id}`}
           item={item}
@@ -223,7 +223,9 @@ function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = parseVerdict(run.summary);
   const [label, tone] =
-    isShipMode(run.mode)
+    run.mode === "command"
+      ? ["Succeeded", "pill-green"]
+      : isShipMode(run.mode)
       ? [run.mode === "release" ? "Released" : "Shipped", "pill-violet"]
       : run.mode === "ask"
       ? ["Answered", "pill-muted"]
@@ -264,7 +266,7 @@ function ItemHeader({ item, job, actions }: { item: Item; job: Job | null; actio
           <ItemPill item={item} />
           <span>
             {item.runs.length} run{item.runs.length === 1 ? "" : "s"}
-            {job && ` · ${agentLabel(job.effectiveAgent)} on ${repoName(job.repoPath)}`}
+            {job && (job.kind === "command" ? ` · Command in ${repoName(job.repoPath)}` : ` · ${agentLabel(job.effectiveAgent)} on ${repoName(job.repoPath)}`)}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">{actions}</div>
@@ -291,6 +293,7 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
   const ask = run.mode === "ask";
   const release = run.mode === "release";
   if (run.mode === "ship") return <ShipTurn run={run} selected={selected} />;
+  if (run.mode === "command") return <CommandTurn run={run} selected={selected} />;
   return (
     <div className="grid gap-3">
       {run.instructions !== null && run.retryOf === null ? (
@@ -416,6 +419,54 @@ function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
   );
 }
 
+/** A command job's run: what started it, then the end of what its command printed. */
+function CommandTurn({ run, selected }: { run: Run; selected: boolean }) {
+  const now = useNow(1000);
+  const active = isActive(run.status);
+  const output = (run.summary ?? "").split("\n").slice(-SHIP_TAIL_LINES).join("\n");
+  return (
+    <div className="grid gap-3">
+      <p className="text-[12px] text-fog">
+        {run.retryOf !== null ? `Retry of #${run.retryOf} (attempt ${run.attempt})` : `${STARTED_BY[run.trigger]} · ${relativeTime(run.createdAt, now)}`}
+      </p>
+      <div className={`turn-agent ${selected ? "turn-selected" : ""}`} aria-current={selected ? "true" : undefined}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
+          <span className="turn-label">Command</span>
+          <RunPill run={run} />
+          <Link to={`/runs/${run.id}`} className="font-mono hover:text-bone" title="Select this run for its details and log">
+            #{run.id}
+          </Link>
+          {run.startedAt && <span>{duration(run.startedAt, run.finishedAt, now)}</span>}
+          {run.exitCode !== null && <span className="font-mono">exit {run.exitCode}</span>}
+        </div>
+        {run.status === "queued" ? (
+          <p className="text-[14px] text-fog">
+            {run.notBefore && Date.parse(run.notBefore) > now ? `Retrying at ${dateTime(run.notBefore)}.` : "Waiting for a free slot. It starts as soon as another run finishes."}
+          </p>
+        ) : run.status === "running" ? (
+          <p className="text-[14px] text-fog">
+            Running…{" "}
+            {!selected && (
+              <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
+                Watch the log
+              </Link>
+            )}
+          </p>
+        ) : (
+          <>
+            {run.error && <p className="text-[14px] text-red">{run.error}</p>}
+            {output ? (
+              <pre className="log-view max-h-80 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{output}</pre>
+            ) : (
+              !active && <p className="text-[14px] text-fog">The command printed nothing.</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const APPROVAL_REASONS: Partial<Record<Run["trigger"], string>> = {
   watch: "The job's watch found a new item.",
   webhook: "The job's webhook received a request.",
@@ -433,7 +484,21 @@ function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | nul
           Start this run?
         </h2>
         <p className="max-w-[72ch] text-[14px] leading-relaxed text-fog">
-          {APPROVAL_REASONS[run.trigger]} Approving starts {agentLabel(run.agent)}
+          {APPROVAL_REASONS[run.trigger]}{" "}
+          {run.mode === "command" ? (
+            <>
+              Approving runs <span className="font-mono text-bone">{job?.command ?? "the job's command"}</span>
+              {job && (
+                <>
+                  {" "}
+                  in <span className="font-mono text-bone">{job.repoPath}</span>
+                </>
+              )}
+              , as you.
+            </>
+          ) : (
+            <>
+          Approving starts {agentLabel(run.agent)}
           {job ? (
             <>
               {" "}
@@ -444,6 +509,8 @@ function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | nul
             " on a new branch"
           )}
           , following the job's instructions{run.payload ? " for this item" : ""}. It never merges or deploys.
+            </>
+          )}
         </p>
       </div>
 
@@ -460,7 +527,7 @@ function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Job | nul
         </dl>
       )}
 
-      {job && (
+      {job && run.mode !== "command" && (
         <Disclosure title="Instructions the agent will follow">
           <pre className="log-view max-h-72 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{job.prompt}</pre>
         </Disclosure>
@@ -693,7 +760,7 @@ function RunDetails({ run, job }: { run: Run; job: Job | null }) {
         ? `${run.mode === "ask" ? "Question" : run.mode === "ship" ? "Ship" : run.mode === "release" ? "Release" : "Change request"} after #${run.followUpOf}`
         : TRIGGER_LABELS[run.trigger],
     ],
-    ["Agent", run.mode === "ship" ? "None (ship command)" : agentLabel(run.agent)],
+    ["Agent", run.mode === "ship" ? "None (ship command)" : run.mode === "command" ? "None (command job)" : agentLabel(run.agent)],
     ["Created", dateTime(run.createdAt)],
     [
       "Started",
@@ -717,7 +784,10 @@ function RunDetails({ run, job }: { run: Run; job: Job | null }) {
       </Link>,
     ]);
   }
-  if (job) rows.push(["Repository", <span key="repo" className="font-mono text-[12px]">{job.repoPath}</span>]);
+  if (job && job.kind === "command") {
+    rows.push(["Directory", <span key="dir" className="font-mono text-[12px]">{job.repoPath}</span>]);
+    rows.push(["Command", <span key="cmd" className="font-mono text-[12px]">{job.command}</span>]);
+  } else if (job) rows.push(["Repository", <span key="repo" className="font-mono text-[12px]">{job.repoPath}</span>]);
   if (run.worktree) rows.push(["Worktree (kept)", <span key="wt" className="font-mono text-[12px]">{run.worktree}</span>]);
   return (
     <Disclosure title="Run details">

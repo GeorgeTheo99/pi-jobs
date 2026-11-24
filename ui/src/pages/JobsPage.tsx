@@ -65,7 +65,7 @@ export function JobsPage() {
                     {job.name}
                   </Link>
                   <div className="truncate font-mono text-[12px] text-fog" title={job.repoPath}>
-                    {repoName(job.repoPath)} · {job.baseRef}
+                    {job.kind === "command" ? job.repoPath : `${repoName(job.repoPath)} · ${job.baseRef}`}
                   </div>
                 </div>
 
@@ -91,7 +91,13 @@ export function JobsPage() {
                 </div>
 
                 <div>
-                  <AgentBadge agent={job.effectiveAgent} inherited={job.agent === null} />
+                  {job.kind === "command" ? (
+                    <span className="chip chip-mono" title={job.command ?? ""}>
+                      Command
+                    </span>
+                  ) : (
+                    <AgentBadge agent={job.effectiveAgent} inherited={job.agent === null} />
+                  )}
                 </div>
 
                 <div className="flex min-w-0 items-center gap-2.5 text-[13px]">
