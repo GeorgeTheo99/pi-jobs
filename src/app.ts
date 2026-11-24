@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { AGENT_IDS, AGENT_PRESETS, buildArgv, commandProgram, isAgentId, resolveExecutable } from "./agents.ts";
 import type { Config } from "./config.ts";
-import { JobPausedError, QueueFullError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
+import { JobPausedError, QueueFullError, ShipRefusedError, isGitRepo, resolvesToCommit, type Runner } from "./runner.ts";
 import { cronError, nextRuns, type Scheduler } from "./scheduler.ts";
 import { resolveCheckout, scanCheckouts, type Checkout } from "./repos.ts";
 import { ACTIVE_STATUSES, DEFAULT_RETRIES, MAX_RETRIES, TOKEN_PATTERN, TOKEN_RULE, type ApiToken, type Job, type JobInput, type Settings, type Store } from "./store.ts";
@@ -355,6 +355,21 @@ export function createApp(deps: AppDeps) {
     ],
     [
       "POST",
+      /^\/api\/runs\/(\d+)\/ship$/,
+      async (_req, [id]) => {
+        const run = store.getRun(Number(id));
+        if (!run) throw new HttpError(404, "Run not found");
+        try {
+          return await runner.ship(run);
+        } catch (error) {
+          if (error instanceof ShipRefusedError) throw new HttpError(409, error.message);
+          if (error instanceof QueueFullError) throw new HttpError(429, error.message);
+          throw error;
+        }
+      },
+    ],
+    [
+      "POST",
       /^\/api\/runs\/(\d+)\/cancel$/,
       async (_req, [id]) => {
         const run = runner.cancel(Number(id));
@@ -532,6 +547,10 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
   const watchCommand = body.watchCommand === undefined ? (existing?.watchCommand ?? null) : text("watchCommand") || null;
   if (watchCommand && watchCommand.length > 4000) fields.watchCommand = "Keep the watch command under 4,000 characters";
 
+  // Like the watch command: older clients leave it out, and their updates keep the job's.
+  const shipCommand = body.shipCommand === undefined ? (existing?.shipCommand ?? null) : text("shipCommand") || null;
+  if (shipCommand && shipCommand.length > 4000) fields.shipCommand = "Keep the ship command under 4,000 characters";
+
   const retries = Number(body.retries ?? existing?.retries ?? DEFAULT_RETRIES);
   if (!Number.isInteger(retries) || retries < 0 || retries > MAX_RETRIES) {
     fields.retries = `Use a whole number from 0 to ${MAX_RETRIES}`;
@@ -552,6 +571,7 @@ async function validateJob(body: Record<string, unknown>, existing: Job | null =
     retries,
     watchCommand,
     approveRuns: typeof body.approveRuns === "boolean" ? body.approveRuns : (existing?.approveRuns ?? false),
+    shipCommand,
     enabled: body.enabled !== false,
   };
 }

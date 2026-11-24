@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { ShipRefusedError } from "../src/runner.ts";
 import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
 
 test("a successful run commits the agent's changes to a branch and removes the worktree", async (t) => {
@@ -747,7 +748,7 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   settings.agents.pi.command = `${path.join(bin, "pi")} edit {prompt}`;
   ctx.store.saveSettings(settings);
 
-  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const job = ctx.store.createJob(ctx.jobInput({ shipCommand: "echo shipped-ok" }), null);
   const first = ctx.runner.trigger(job, "manual");
   assert.ok("run" in first);
   const root = await waitForFinish(ctx.runner, first.run.id);
@@ -766,6 +767,17 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   assert.match(prompt, /continues your earlier conversation/);
   assert.doesNotMatch(prompt, /Everything below is context/, "a resumed session needs no context block");
   assert.match(readFileSync(ctx.runner.logPath(change.id), "utf8"), /resuming session/);
+
+  // A ship runs no agent, so the conversation carries on past it; its output is told to the agent.
+  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.ship(change)).id);
+  assert.equal(shipped.status, "succeeded", shipped.error ?? "");
+  assert.equal(shipped.sessionId, root.sessionId);
+  const after = await waitForFinish(ctx.runner, ctx.runner.followUp(shipped, "Tidy up", "change").id);
+  assert.equal(after.sessionId, root.sessionId);
+  assert.equal(readFileSync(sessions, "utf8").trim().split("\n").length, 4, "the ship itself started no agent");
+  const afterPrompt = git(ctx.repo, "show", `${after.branch}:agent-output.txt`);
+  assert.match(afterPrompt, /continues your earlier conversation/);
+  assert.match(afterPrompt, /ship command printed \(the end\):\n```\nshipped-ok\n```/);
 
   const other = ctx.runner.trigger(job, "manual");
   assert.ok("run" in other);
@@ -834,4 +846,73 @@ test("a retry starts a new Pi session instead of resuming the failed attempt's",
   const retried = await waitForFinish(ctx.runner, retry.id);
   assert.ok(failed.sessionId && retried.sessionId);
   assert.notEqual(retried.sessionId, failed.sessionId);
+});
+
+test("ship runs the job's ship command on the item's result; it is never retried and its output reaches the next follow-up", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const record = path.join(ctx.root, "shipped.txt");
+  const ok = path.join(ctx.root, "ok");
+  const shipCommand =
+    `printf '%s %s %s %s\\n' "$PI_JOBS_SHIP_COMMIT" "$PI_JOBS_SHIP_BRANCH" "$PI_JOBS_BASE_REF" "$(cat committed.txt)" > ${record}; ` +
+    `echo "release step done"; test -f ${ok} || { echo "acceptance failed: upgrade broke" >&2; exit 3; }`;
+  ctx.useFakeAgent("commit");
+  const plain = ctx.store.createJob(ctx.jobInput({ name: "Plain" }), null);
+  const job = ctx.store.createJob(ctx.jobInput({ shipCommand, retries: 2 }), null);
+
+  const nothing = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in nothing);
+  ctx.useFakeAgent("noop");
+  const empty = await waitForFinish(ctx.runner, nothing.run.id);
+  await assert.rejects(ctx.runner.ship(empty), new ShipRefusedError("Nothing to ship: this item has no changes"));
+
+  ctx.useFakeAgent("commit");
+  const started = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in started);
+  const changed = await waitForFinish(ctx.runner, started.run.id);
+  assert.equal(changed.commits, 1);
+  const other = ctx.runner.trigger(plain, "manual");
+  assert.ok("run" in other);
+  await assert.rejects(ctx.runner.ship(await waitForFinish(ctx.runner, other.run.id)), /no ship command/);
+
+  // Paused jobs can still be shipped: the owner starts it.
+  ctx.store.updateJob(job.id, { ...ctx.jobInput({ shipCommand, retries: 2 }), enabled: false }, null);
+  const queued = await ctx.runner.ship(changed);
+  assert.equal(queued.mode, "ship");
+  assert.equal(queued.instructions, shipCommand);
+  assert.equal(queued.itemId, changed.itemId);
+  const failed = await waitForFinish(ctx.runner, queued.id);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error, "The ship command exited with code 3");
+  assert.equal(failed.worktree, null, "its checkout is discarded");
+  assert.equal(failed.commits, 0);
+  assert.match(failed.summary ?? "", /release step done\nacceptance failed: upgrade broke/);
+  assert.equal(readFileSync(record, "utf8"), `${changed.headCommit} ${changed.branch} main by agent\n`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(changed.itemId).length, 2, "a failed ship is not retried");
+
+  // A follow-up fixes it, knowing what the ship printed; a succeeded fix ships again.
+  ctx.store.updateJob(job.id, ctx.jobInput({ shipCommand, retries: 2 }), null);
+  ctx.useFakeAgent("edit");
+  const fix = await waitForFinish(ctx.runner, ctx.runner.followUp(failed, "Fix what broke the release").id);
+  assert.equal(fix.status, "succeeded", fix.error ?? "");
+  assert.equal(fix.baseCommit, changed.headCommit, "it builds on the shipped result");
+  const prompt = git(ctx.repo, "show", `${fix.branch}:agent-output.txt`);
+  assert.match(prompt, /^Fix what broke the release/);
+  assert.match(prompt, new RegExp(`Run #${failed.id} shipped this item: .* failed \\(The ship command exited with code 3\\)`));
+  assert.match(prompt, /ship command printed \(the end\):\n```\nrelease step done\nacceptance failed: upgrade broke\n```/);
+  assert.match(prompt, /The job's instructions:\n```\nDo the thing/, "the ship command isn't passed off as instructions");
+
+  writeFileSync(ok, "");
+  const shipped = await waitForFinish(ctx.runner, (await ctx.runner.ship(fix)).id);
+  assert.equal(shipped.status, "succeeded", shipped.error ?? "");
+  assert.equal(shipped.baseCommit, fix.headCommit);
+  assert.equal(readFileSync(record, "utf8").split(" ")[0], fix.headCommit);
+  // A ship can be repeated by the owner; a running item can't be shipped.
+  ctx.useFakeAgent("sleep");
+  const busy = ctx.runner.followUp(shipped, "Keep going");
+  await assert.rejects(ctx.runner.ship(shipped), /Wait for the item's runs to finish/);
+  ctx.runner.cancel(busy.id);
+  const canceled = await waitForFinish(ctx.runner, busy.id);
+  await assert.rejects(ctx.runner.ship(canceled), /Only a succeeded result can be shipped/);
 });

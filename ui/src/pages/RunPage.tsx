@@ -1,4 +1,4 @@
-import { Check, MessageCircleQuestion, Square, Wrench } from "lucide-react";
+import { Check, MessageCircleQuestion, Rocket, Square, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Changes } from "@/components/Changes";
@@ -7,7 +7,7 @@ import { Markdown } from "@/components/Markdown";
 import { CopyButton, ErrorNote, Skeleton, StatusPill, Switch } from "@/components/ui";
 import { AGENT_LABELS, ApiError, TRIGGER_LABELS, api, isActive, type Job, type Run, type RunMode } from "@/lib/api";
 import { dateTime, duration, relativeTime, repoName, summarizePayload } from "@/lib/format";
-import { groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
+import { canShip, groupItems, itemFields, itemTitle, type Item } from "@/lib/items";
 import { VERDICT_LABELS, parseVerdict, splitReply, type Verdict } from "@/lib/report";
 import { useNow, usePoll, useRefreshOnChange } from "@/lib/usePoll";
 
@@ -79,7 +79,22 @@ export function RunPage() {
                 {activeRun.status === "queued" ? "Cancel" : "Stop"}
               </button>
             )}
-            {itemFinished && item.state !== "merged" && (
+            {job && canShip(item, job.shipCommand) && (
+              <button
+                type="button"
+                className={`btn ${item.state === "shipped" ? "btn-ghost" : "btn-primary"}`}
+                title={`Runs ${job.shipCommand} on this item's result`}
+                onClick={() => {
+                  const commit = item.withChanges?.headCommit?.slice(0, 12) ?? "";
+                  if (!window.confirm(`Ship this item's result (${commit})?\n\nRuns: ${job.shipCommand}\n\nIt runs as you, with your credentials, and may do things that can't be undone.`)) return;
+                  void act(() => api.ship(item.latest.id));
+                }}
+              >
+                <Rocket aria-hidden className="size-3.5" />
+                {item.latestWork.mode === "ship" ? "Ship again" : "Ship"}
+              </button>
+            )}
+            {itemFinished && item.state !== "merged" && item.state !== "shipped" && (
               <button
                 type="button"
                 className="btn btn-ghost"
@@ -201,7 +216,9 @@ function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = parseVerdict(run.summary);
   const [label, tone] =
-    run.mode === "ask"
+    run.mode === "ship"
+      ? ["Shipped", "pill-violet"]
+      : run.mode === "ask"
       ? ["Answered", "pill-muted"]
       : run.merged
         ? ["Merged", "pill-violet"]
@@ -265,6 +282,7 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
   const long = report.length > 280 || report.split("\n").length > 4;
   const [expanded, setExpanded] = useState(selected || latest || !long);
   const ask = run.mode === "ask";
+  if (run.mode === "ship") return <ShipTurn run={run} selected={selected} />;
   return (
     <div className="grid gap-3">
       {run.instructions !== null && run.retryOf === null ? (
@@ -321,6 +339,62 @@ function Turn({ run, selected, latest }: { run: Run; selected: boolean; latest: 
           <button type="button" className="justify-self-start text-[12px] font-semibold text-fog hover:text-bone" onClick={() => setExpanded((e) => !e)}>
             {expanded ? "Show less" : "Show the whole report"}
           </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** How many of a ship command's last lines its turn shows; the whole output is in the log. */
+const SHIP_TAIL_LINES = 30;
+
+/** A ship: the owner ran the job's ship command; what it printed (the end) instead of an agent's report. */
+function ShipTurn({ run, selected }: { run: Run; selected: boolean }) {
+  const now = useNow(1000);
+  const active = isActive(run.status);
+  const output = (run.summary ?? "").split("\n").slice(-SHIP_TAIL_LINES).join("\n");
+  return (
+    <div className="grid gap-3">
+      <div className="turn-you">
+        <div className="turn-label">
+          <Rocket aria-hidden className="size-3.5" />
+          You · Ship · {relativeTime(run.createdAt, now)}
+        </div>
+        <p className="font-mono text-[13px] break-all text-bone">{run.instructions}</p>
+      </div>
+      <div className={`turn-agent ${selected ? "turn-selected" : ""}`} aria-current={selected ? "true" : undefined}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
+          <span className="turn-label">Ship command</span>
+          <RunPill run={run} />
+          <Link to={`/runs/${run.id}`} className="font-mono hover:text-bone" title="Select this run for its details and log">
+            #{run.id}
+          </Link>
+          {run.startedAt && <span>{duration(run.startedAt, run.finishedAt, now)}</span>}
+          {run.baseCommit && <span className="font-mono">{run.baseCommit.slice(0, 12)}</span>}
+        </div>
+        {run.status === "queued" ? (
+          <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
+        ) : run.status === "running" ? (
+          <p className="text-[14px] text-fog">
+            Shipping…{" "}
+            {!selected && (
+              <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
+                Watch the log
+              </Link>
+            )}
+          </p>
+        ) : (
+          <>
+            {run.error && <p className="text-[14px] text-red">{run.error}</p>}
+            {output ? (
+              <pre className="log-view max-h-80 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{output}</pre>
+            ) : (
+              !active && <p className="text-[14px] text-fog">The ship command printed nothing.</p>
+            )}
+            {run.status !== "succeeded" && (
+              <p className="text-[13px] text-fog">Send a change below and the agent gets this output as context; then ship again.</p>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -601,10 +675,10 @@ function RunDetails({ run, job }: { run: Run; job: Job | null }) {
     [
       "Trigger",
       run.followUpOf !== null
-        ? `${run.mode === "ask" ? "Question" : "Change request"} after #${run.followUpOf}`
+        ? `${run.mode === "ask" ? "Question" : run.mode === "ship" ? "Ship" : "Change request"} after #${run.followUpOf}`
         : TRIGGER_LABELS[run.trigger],
     ],
-    ["Agent", AGENT_LABELS[run.agent]],
+    ["Agent", run.mode === "ship" ? "None (ship command)" : AGENT_LABELS[run.agent]],
     ["Created", dateTime(run.createdAt)],
     [
       "Started",

@@ -1,5 +1,5 @@
 import type { Run } from "./api";
-import { groupItems, itemFields } from "./items";
+import { canShip, groupItems, itemFields } from "./items";
 
 const run = (overrides: Partial<Run>): Run => ({
   id: 1,
@@ -88,4 +88,22 @@ test("itemFields reads a report's reference and kind", () => {
     receivedAt: "2026-11-22T00:00:00Z",
   });
   expect(itemFields(run({ payload: "plain" }))).toEqual({ reference: null, kind: null, receivedAt: null });
+});
+
+test("a ship joins its item: shipped once it succeeds; Ship needs a command, changes and succeeded work", () => {
+  const work = run({ id: 1, commits: 1, headCommit: "abc" });
+  const [ready] = groupItems([work]);
+  expect(canShip(ready!, "scripts/ship.sh")).toBe(true);
+  expect(canShip(ready!, null)).toBe(false);
+  expect(canShip(groupItems([run({ id: 1, commits: 0 })])[0]!, "scripts/ship.sh")).toBe(false);
+  expect(canShip(groupItems([run({ id: 1, commits: 1, status: "failed" })])[0]!, "scripts/ship.sh")).toBe(false);
+
+  const failedShip = run({ id: 2, followUpOf: 1, trigger: "manual", mode: "ship", status: "failed", instructions: "scripts/ship.sh" });
+  const [broken] = groupItems([work, failedShip]);
+  expect(broken!.state).toBe("failed");
+  expect(canShip(broken!, "scripts/ship.sh")).toBe(true);
+
+  const [shipped] = groupItems([work, failedShip, run({ id: 3, followUpOf: 2, trigger: "manual", mode: "ship", instructions: "scripts/ship.sh" })]);
+  expect(shipped!.state).toBe("shipped");
+  expect(canShip(groupItems([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })])[0]!, "scripts/ship.sh")).toBe(false);
 });

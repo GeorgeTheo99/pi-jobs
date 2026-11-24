@@ -52,7 +52,7 @@ test("runs from before items were stored get their item from the run they retry 
   const first = new Store(file);
   const job = first.createJob(
     { name: "j", repoPath: dir, baseRef: "main", prompt: "p", agent: null, schedule: null, timeoutMinutes: 5, checkCommand: null,
-      pushBranch: false, catchUp: true, retries: 0, watchCommand: null, approveRuns: false, enabled: true },
+      pushBranch: false, catchUp: true, retries: 0, watchCommand: null, approveRuns: false, shipCommand: null, enabled: true },
     null,
   );
   const root = first.createRun(job.id, "watch", "pi", null);

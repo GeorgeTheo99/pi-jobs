@@ -45,6 +45,7 @@ export function setup() {
     retries: 0,
     watchCommand: null,
     approveRuns: false,
+    shipCommand: null,
     enabled: true,
     ...overrides,
   });

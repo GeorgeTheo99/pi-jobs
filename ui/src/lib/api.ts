@@ -1,7 +1,10 @@
 export type AgentId = "pi" | "claude" | "codex";
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
-/** A change run may commit to a branch; an ask run only answers, and its checkout is discarded. */
-export type RunMode = "change" | "ask";
+/**
+ * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
+ * ship run runs the job's ship command (no agent) on the item's result.
+ */
+export type RunMode = "change" | "ask" | "ship";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
 export const AGENT_LABELS: Record<AgentId, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
@@ -74,6 +77,8 @@ export interface Job {
   retries: number;
   watchCommand: string | null;
   approveRuns: boolean;
+  /** What Ship runs on an item's result; null when the job can't ship. */
+  shipCommand: string | null;
   enabled: boolean;
   lastFiredAt: string | null;
   watchCheckedAt: string | null;
@@ -101,6 +106,7 @@ export interface JobDraft {
   retries: number;
   watchCommand: string;
   approveRuns: boolean;
+  shipCommand: string;
   enabled: boolean;
 }
 
@@ -222,6 +228,8 @@ export const api = {
   approveRun: (id: number) => request<Run>("POST", `/api/runs/${id}/approve`),
   followUp: (id: number, instructions: string, mode: RunMode = "change") =>
     request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions, mode }),
+  /** Runs the job's ship command on the run's item. */
+  ship: (id: number) => request<Run>("POST", `/api/runs/${id}/ship`),
   /** Every run of the run's item, oldest first, with their reports. */
   thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
   changes: (id: number, sinceBase = false) => request<RunChanges>("GET", `/api/runs/${id}/changes${sinceBase ? "?since=base" : ""}`),
@@ -253,6 +261,7 @@ export function jobToDraft(job: Job): JobDraft {
     retries: job.retries,
     watchCommand: job.watchCommand ?? "",
     approveRuns: job.approveRuns,
+    shipCommand: job.shipCommand ?? "",
     enabled: job.enabled,
   };
 }

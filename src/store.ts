@@ -5,8 +5,11 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { AGENT_IDS, AGENT_PRESETS, isAgentId, type AgentId } from "./agents.ts";
 
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
-/** A change run may commit to a branch; an ask run only answers, and its checkout is discarded. */
-export type RunMode = "change" | "ask";
+/**
+ * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
+ * ship run runs the job's ship command (no agent) on the item's result.
+ */
+export type RunMode = "change" | "ask" | "ship";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 /** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
@@ -37,6 +40,11 @@ export interface JobInput {
   watchCommand: string | null;
   /** Runs started by the schedule, webhook or watch wait for approval; manual runs never do. */
   approveRuns: boolean;
+  /**
+   * Shell command the owner runs on an item's result with Ship (merge, release, deploy: whatever the
+   * repository's own script does). pi-jobs never runs it by itself.
+   */
+  shipCommand: string | null;
   enabled: boolean;
 }
 
@@ -195,6 +203,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["runs", "mode", "TEXT NOT NULL DEFAULT 'change'"],
   ["runs", "item_id", "INTEGER"],
   ["runs", "session_id", "TEXT"],
+  ["jobs", "ship_command", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -252,6 +261,7 @@ function toJob(row: Row): Job {
     catchUp: row.catch_up === 1,
     retries: Number(row.retries),
     watchCommand: (row.watch_command as string | null) ?? null,
+    shipCommand: (row.ship_command as string | null) ?? null,
     approveRuns: row.approve_runs === 1,
     enabled: row.enabled === 1,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
@@ -277,7 +287,7 @@ function toRun(row: Row): Run {
     followUpOf: num(row.follow_up_of),
     instructions: (row.instructions as string | null) ?? null,
     summary: (row.summary as string | null) ?? null,
-    mode: row.mode === "ask" ? "ask" : "change",
+    mode: row.mode === "ask" || row.mode === "ship" ? row.mode : "change",
     itemId: Number(row.item_id ?? row.id),
     sessionId: (row.session_id as string | null) ?? null,
     repliedAt: (row.replied_at as string | null) ?? null,
@@ -347,9 +357,9 @@ export class Store {
     const result = this.db
       .prepare(
         `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
-           timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, enabled,
-           created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, ship_command,
+           enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -366,6 +376,7 @@ export class Store {
         input.retries,
         input.watchCommand,
         input.approveRuns ? 1 : 0,
+        input.shipCommand,
         input.enabled ? 1 : 0,
         ts,
         ts,
@@ -378,7 +389,7 @@ export class Store {
       .prepare(
         `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
-           watch_command = ?, approve_runs = ?, enabled = ?, updated_at = ?
+           watch_command = ?, approve_runs = ?, ship_command = ?, enabled = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -396,6 +407,7 @@ export class Store {
         input.retries,
         input.watchCommand,
         input.approveRuns ? 1 : 0,
+        input.shipCommand,
         input.enabled ? 1 : 0,
         now(),
         id,
@@ -465,6 +477,20 @@ export class Store {
          VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(of.jobId, agent, of.payload, of.id, instructions, mode, of.itemId, now());
+    return this.getRun(Number(result.lastInsertRowid))!;
+  }
+
+  /**
+   * Queues a ship run on `of`'s item: the job's ship command, recorded as the run's instructions. It
+   * carries the item's agent session on, so the agent's next follow-up continues that conversation.
+   */
+  createShip(of: Run, agent: AgentId, command: string): Run {
+    const result = this.db
+      .prepare(
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, item_id, session_id, created_at)
+         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, 'ship', ?, ?, ?)`,
+      )
+      .run(of.jobId, agent, of.payload, of.id, command, of.itemId, of.sessionId, now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 

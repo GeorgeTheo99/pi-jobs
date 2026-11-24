@@ -21,7 +21,7 @@ export interface Item {
   replied: boolean;
 }
 
-export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "merged" | "closed";
+export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "shipped" | "merged" | "closed";
 
 export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   approval: "Needs approval",
@@ -29,6 +29,7 @@ export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   decision: "Needs your decision",
   review: "Ready to review",
   failed: "Failed",
+  shipped: "Shipped",
   merged: "Merged",
   closed: "Closed",
 };
@@ -85,6 +86,7 @@ const isOpen = (run: Run) => run.status === "awaiting_approval" || run.status ==
 function stateOf(runs: Run[], latestWork: Run, verdict: Verdict, withChanges: Run | null): ItemState {
   if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
   if (runs.some(isOpen)) return "running";
+  if (latestWork.mode === "ship" && latestWork.status === "succeeded") return "shipped";
   if (withChanges?.merged) return "merged";
   if (latestWork.closedAt !== null) return "closed";
   if (latestWork.status === "failed" || latestWork.status === "timed_out") return "failed";
@@ -113,6 +115,15 @@ export function itemFields(run: Run): { reference: string | null; kind: string |
     // Not JSON: no fields.
   }
   return { reference: null, kind: null, receivedAt: null };
+}
+
+/**
+ * Whether Ship can run on the item now: the job has a ship command, nothing is running, the item has
+ * changes, and its newest work succeeded (or was a ship, which the owner may run again).
+ */
+export function canShip(item: Item, shipCommand: string | null | undefined): boolean {
+  if (!shipCommand || item.runs.some(isOpen) || !item.withChanges) return false;
+  return item.latestWork.status === "succeeded" || item.latestWork.mode === "ship";
 }
 
 /** The run an item's link opens: the one waiting or running, else the newest finished one. */

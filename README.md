@@ -7,7 +7,8 @@ session, [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s `jobs_*` tools
 run and inspect jobs in natural language.
 
 Each run works in a fresh git worktree, runs your check command, and leaves its changes on a
-branch for review. pi-jobs never merges or deploys.
+branch for review. pi-jobs never merges or deploys by itself: a job can have a ship command (your
+repository's own merge, release or deploy script) that runs only when you press **Ship**.
 
 ## Install (macOS)
 
@@ -57,7 +58,7 @@ which URL each machine's Pi tools use, are configuration.
    machine can `git fetch origin <branch>`. A rejected push (a pre-receive hook, say) fails the
    run and keeps the worktree.
 
-Runs never merge or deploy. Before turning on branch pushes for a repository, check what its
+Runs never merge or deploy ([Ship](#ship) is the owner's step). Before turning on branch pushes for a repository, check what its
 `origin` does with new branches: deploy hooks that act on any branch, or a public host where the
 branch becomes visible. Review a branch with the command shown on its run page, then merge it
 yourself.
@@ -111,13 +112,49 @@ paused (retries, as for any run, only while the job is on). Presets fill in comm
 (implement the proposal, what are the risks, explain the changes, address review notes, shorten the
 reply).
 
+### Ship
+
+A job's **Ship command** is how an item's result goes out: merging it, releasing, deploying,
+whatever the repository's own script does. pi-jobs knows nothing about how a project ships; it
+gives the script the result and reports what happened. Leave the field empty and the job never
+ships.
+
+- **Only you start it.** **Ship** appears on a finished item whose newest work succeeded (its
+  check passed) and left changes (or `POST /api/runs/<id>/ship`). It needs no approval, runs while
+  the job is paused, and is never retried: a ship may have done part of something irreversible,
+  so after a failure you decide what comes next. **Ship again** runs it once more.
+- **What it runs.** `/bin/sh -c <ship command>` in a temporary checkout of the item's newest
+  commits (deleted after), as you, within the job's timeout, with:
+
+  | Variable | Value |
+  |---|---|
+  | `PI_JOBS_SHIP_COMMIT` | The commit to ship |
+  | `PI_JOBS_SHIP_BRANCH` | The run branch it is on (`pi-jobs/<job>/run-<id>`) |
+  | `PI_JOBS_BASE_REF` | The job's base branch |
+  | `PI_JOBS_REPO` | The job's repository (your checkout) |
+  | `PI_JOBS_ITEM_ID`, `PI_JOBS_RUN_ID`, `PI_JOBS_JOB_ID` | Where it came from |
+
+  Exit 0 and the item is **Shipped**; anything else fails the ship run, with the command's output
+  as its report.
+- **When it fails, the agent fixes it.** Send **Make changes** on the item: the agent gets what
+  the ship printed (the end) as context, and continues the item's conversation. When that run
+  succeeds, ship again. A release whose acceptance test catches a bad upgrade goes: ship fails,
+  the agent fixes the packaging, ship succeeds.
+- **Write the script to fail closed.** Put the checks that matter (tests, a real install or
+  upgrade, a staging deploy) before the step that can't be undone, and stop at the first failure.
+  Make it safe to run again: it may be re-run after a partial failure. A ship script typically
+  starts by fast-forwarding the base branch to `PI_JOBS_SHIP_COMMIT` and pushing it.
+- **It runs the item's code.** The checkout holds what the agent wrote, ship script included,
+  and runs with your credentials. The agent could already run anything as you (see Safety), but
+  review **Changes** before shipping, especially changes to the script itself.
+
 ### The Inbox
 
 The home page groups runs into **items**: a run started by a trigger, with its retries and
 follow-ups (a support report's triage, your questions about it and the run that implements it are one item). Its
 sections are **Waiting for you** (runs to approve, and proposals that need your decision, with
 **Implement it**, which opens the composer with that instruction filled in), **In progress**, **To
-review** (changes on a branch) and **Recent** (merged, closed, failed). **Check now** checks every
+review** (changes on a branch) and **Recent** (shipped, merged, closed, failed). **Check now** checks every
 watch at once (`POST /api/watches/check`). The nav badge counts what is waiting for you.
 
 A run page shows its whole item as a conversation: what started it, then each of your messages
@@ -133,7 +170,8 @@ last fetched, else the local branch). **Close item** marks one done without merg
 these: `GET /api/runs/<id>/thread` (the item's runs, oldest first, with reports), a finished run's `summary` (the agent's report; lists carry `summaryHeadline` and
 `summaryVerdict` instead) and `merged`, `GET /api/runs/<id>/changes[?since=base]` (files and patch,
 up to 1 MiB), and `POST /api/runs/<id>/replied` or `/closed` with `{"value": true|false}`. pi-jobs
-never sends replies, merges or pushes: those stay with you.
+never sends replies, merges or pushes by itself: those stay with you, or with the ship command you
+start.
 
 Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
 how many runs happen at once (default 2).
@@ -265,5 +303,5 @@ Vite and Tailwind 4 in a dark navy and amber theme.
 | `npm --prefix ui run dev` | Vite dev server, proxying `/api` to :8790 |
 | `npm run check` | Typecheck, server tests, UI lint and tests, UI build |
 
-Not built yet: notifications, and taking over a run interactively. Merging and pushing stay manual
-on purpose: pushing a base branch deploys some apps.
+Not built yet: notifications, and taking over a run interactively. Merging and pushing happen only
+through a ship command you start, on purpose: pushing a base branch deploys some apps.

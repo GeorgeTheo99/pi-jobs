@@ -447,3 +447,31 @@ test("follow-ups take a mode; a run's thread lists its item's runs with their re
   assert.equal(typeof thread[0].merged, "boolean");
   assert.equal((await app.call("GET", "/api/runs/999/thread")).status, 404);
 });
+
+test("ship: the job keeps its ship command across older clients' updates; POST /ship refuses what can't ship", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("commit");
+  const created = await app.call("POST", "/api/jobs", { name: "Release", repoPath: app.repo, prompt: "go", shipCommand: "  echo shipping  " });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  assert.equal(created.json.shipCommand, "echo shipping");
+  const kept = await app.call("PUT", `/api/jobs/${created.json.id}`, { name: "Release", repoPath: app.repo, prompt: "go again" });
+  assert.equal(kept.json.shipCommand, "echo shipping", "an update without the field keeps it");
+  const long = await app.call("PUT", `/api/jobs/${created.json.id}`, { name: "Release", repoPath: app.repo, prompt: "go", shipCommand: "x".repeat(4001) });
+  assert.equal(long.status, 400);
+  assert.ok(long.json.fields.shipCommand);
+
+  const run = (await app.call("POST", `/api/jobs/${created.json.id}/run`, {})).json;
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/ship`, {})).status, 409, "not while the item is running");
+  await waitForFinish(app.runner, run.id);
+  assert.equal((await app.call("POST", "/api/runs/999/ship", {})).status, 404);
+  const shipped = await app.call("POST", `/api/runs/${run.id}/ship`, {});
+  assert.equal(shipped.status, 200, JSON.stringify(shipped.json));
+  assert.equal(shipped.json.mode, "ship");
+  assert.equal((await waitForFinish(app.runner, shipped.json.id)).status, "succeeded");
+
+  const cleared = await app.call("PUT", `/api/jobs/${created.json.id}`, { name: "Release", repoPath: app.repo, prompt: "go", shipCommand: "" });
+  assert.equal(cleared.json.shipCommand, null);
+  const refused = await app.call("POST", `/api/runs/${run.id}/ship`, {});
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.error, /no ship command/);
+});

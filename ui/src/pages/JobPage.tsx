@@ -34,6 +34,7 @@ const EMPTY_DRAFT: JobDraft = {
   catchUp: true,
   retries: 2,
   watchCommand: "",
+  shipCommand: "",
   approveRuns: false,
   enabled: true,
 };
@@ -303,6 +304,23 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               checked={draft.pushBranch}
               onChange={(v) => set("pushBranch", v)}
             />
+            <Field
+              label="Ship command"
+              error={fields.shipCommand}
+              hint="Optional. Adds Ship to finished items: it runs this in a checkout of the item's result (PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF, PI_JOBS_REPO) only when you press it. Use your repository's own merge, release or deploy script; a failure goes back to the agent as context for the next follow-up."
+            >
+              {(p) => (
+                <input
+                  {...p}
+                  className="field font-mono text-[13px]"
+                  value={draft.shipCommand}
+                  onChange={(e) => set("shipCommand", e.target.value)}
+                  placeholder="scripts/ship.sh"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                />
+              )}
+            </Field>
             <ToggleRow
               label="Enabled"
               hint="Paused jobs ignore their schedule and webhook. You can still run them by hand."
@@ -339,6 +357,7 @@ function JobItems({ job }: { job: Job }) {
   const facts = [
     job.enabled ? null : "Paused",
     job.watchCommand ? "Watches for new items" : null,
+    job.shipCommand ? "Ship button on finished items" : null,
     job.schedule ? `${describeSchedule(job.schedule)}${job.nextRunAt ? `, next ${relativeTime(job.nextRunAt, now)}` : ""}` : "No schedule",
     job.watchCommand && job.watchCheckedAt ? `checked ${relativeTime(job.watchCheckedAt, now)}` : null,
     job.webhookToken ? "Webhook on" : null,
