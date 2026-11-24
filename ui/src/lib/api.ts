@@ -41,7 +41,9 @@ export type Trigger = "manual" | "schedule" | "webhook" | "watch";
  * ship run runs the job's ship command (no agent) on the item's result; a release run has the agent
  * release it by the job's release instructions.
  */
-export type RunMode = "change" | "ask" | "ship" | "release";
+export type RunMode = "change" | "ask" | "ship" | "release" | "command";
+/** An agent job runs a coding agent in a worktree; a command job runs a shell command in a directory. */
+export type JobKind = "agent" | "command";
 /** Runs that release an item: its agent, or its release script ("ship"). */
 export const isReleaseMode = (mode: RunMode) => mode === "ship" || mode === "release";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
@@ -108,9 +110,12 @@ export interface Run {
 export interface Job {
   id: number;
   name: string;
+  kind: JobKind;
+  /** The agent job's repository, or the command job's directory. */
   repoPath: string;
   baseRef: string;
   prompt: string;
+  command: string | null;
   agent: AgentId | null;
   schedule: string | null;
   webhookToken: string | null;
@@ -143,9 +148,11 @@ export interface Job {
 
 export interface JobDraft {
   name: string;
+  kind: JobKind;
   repoPath: string;
   baseRef: string;
   prompt: string;
+  command: string;
   agent: AgentId | null;
   schedule: string;
   webhookEnabled: boolean;
@@ -387,9 +394,11 @@ export const isActive = (status: RunStatus) =>
 export function jobToDraft(job: Job): JobDraft {
   return {
     name: job.name,
+    kind: job.kind,
     repoPath: job.repoPath,
     baseRef: job.baseRef,
     prompt: job.prompt,
+    command: job.command ?? "",
     agent: job.agent,
     schedule: job.schedule ?? "",
     webhookEnabled: job.webhookToken !== null,

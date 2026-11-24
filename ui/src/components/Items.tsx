@@ -31,7 +31,11 @@ export function ItemPill({ item }: { item: Item }) {
         ) : (
           <span aria-hidden className="size-1.5 rounded-full bg-current" />
         )}
-        {failedRelease ? "Release failed" : ITEM_STATE_LABELS[item.state]}
+        {failedRelease
+          ? "Release failed"
+          : item.state === "closed" && item.latestWork.mode === "command" && item.latestWork.status === "succeeded" && item.latestWork.closedAt === null
+            ? "Succeeded"
+            : ITEM_STATE_LABELS[item.state]}
       </span>
       {verdict && <span className="chip">{verdict}</span>}
     </span>
@@ -150,7 +154,9 @@ export function WaitingCard({ item, job, onChanged }: { item: Item; job: Job | u
           {item.state === "approval"
             ? paused
               ? "The job is paused. Resume it to start."
-              : `${agentLabel(job?.effectiveAgent ?? run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
+              : run.mode === "command"
+                ? `Command in ${job ? repoName(job.repoPath) : "its directory"}`
+                : `${agentLabel(job?.effectiveAgent ?? run.agent)} on ${job ? repoName(job.repoPath) : "the repository"}`
             : failedRelease
               ? "The release didn't finish: check what it did before releasing again"
               : WAITING_NOTES[item.state]}

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { readFile, rm, rmdir } from "node:fs/promises";
 import { buildArgv, supportsSessions, withSession } from "./agents.ts";
@@ -16,6 +16,8 @@ import { parseWatchOutput, runWatchCommand, type WatchResult } from "./watch.ts"
 export const MAX_QUEUED_PER_JOB = 20;
 /** How much of the earlier run's output a follow-up's prompt carries. */
 const MAX_PREVIOUS_OUTPUT = 12_000;
+/** A command job's payload larger than this is passed in a file (PI_JOBS_PAYLOAD_FILE), not the environment. */
+const MAX_PAYLOAD_ENV = 64 * 1024;
 /** How much of the agent's output a run keeps as its summary (the end, where agents report). */
 const MAX_SUMMARY = 20_000;
 /** The wait before the first retry; each further retry waits 4x longer. */
@@ -35,6 +37,8 @@ export class QueueFullError extends Error {}
 export class JobPausedError extends Error {}
 /** Why an item can't be released now. */
 export class ReleaseRefusedError extends Error {}
+/** Command jobs' runs can't be followed up: there is no agent or result to continue. */
+export class FollowUpRefusedError extends Error {}
 /** A run's agent is no longer in Settings: retrying can't help. */
 class AgentMissingError extends Error {}
 
@@ -113,10 +117,12 @@ export class Runner extends EventEmitter<RunnerEvents> {
     if (this.store.countRuns(job.id, WAITING_STATUSES) >= MAX_QUEUED_PER_JOB) {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
-    const agent = job.agent ?? this.store.getSettings().defaultAgent;
+    const command = job.kind === "command";
+    // A command run has no agent; "command" stands in, so the run's record says what ran it.
+    const agent = command ? "command" : (job.agent ?? this.store.getSettings().defaultAgent);
     const approval = job.approveRuns && trigger !== "manual";
-    const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued");
-    this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, agent: ${agent})`);
+    const run = this.store.createRun(job.id, trigger, agent, payload, approval ? "awaiting_approval" : "queued", command ? "command" : "change");
+    this.note(run.id, `${approval ? "Waiting for approval" : "Queued"} (trigger: ${trigger}, ${command ? "command job" : `agent: ${agent}`})`);
     if (approval && announce) this.emit("awaiting", [run]);
     if (pump) this.pump();
     return { run: this.store.getRun(run.id)! };
@@ -142,6 +148,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
     const job = this.store.getJob(previous.jobId);
+    if (job?.kind === "command" || previous.mode === "command") throw new FollowUpRefusedError("A command job's runs have no agent to follow up with");
     const agent = job?.agent ?? this.store.getSettings().defaultAgent;
     const run = this.store.createFollowUp(previous, agent, instructions, mode);
     this.note(run.id, `Queued (${mode === "ask" ? "question" : "follow-up"} on run #${previous.id}, agent: ${agent})`);
@@ -157,6 +164,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
    */
   async release(of: Run, { auto = false, expectedHead, requestedBy }: { auto?: boolean; expectedHead?: string; requestedBy?: string } = {}): Promise<Run> {
     const job = this.store.getJob(of.jobId);
+    if (job?.kind === "command") throw new ReleaseRefusedError("A command job's runs have nothing to release");
     if (!job?.releaseInstructions && !job?.shipCommand) throw new ReleaseRefusedError("This job has no release instructions or ship command");
     const runs = this.store.itemRuns(of.itemId);
     if (runs.some((run) => ACTIVE_STATUSES.includes(run.status))) throw new ReleaseRefusedError("Wait for the item's runs to finish");
@@ -385,7 +393,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
     let run = queued;
     const job = this.store.getJob(run.jobId);
     const agent = job?.agent ?? this.store.getSettings().defaultAgent;
-    if (job && run.mode !== "ship" && agent !== run.agent) {
+    if (job && run.mode !== "ship" && run.mode !== "command" && agent !== run.agent) {
       this.note(run.id, `Agent: ${agent} (the job's agent now; it was ${run.agent} when queued)`);
       run = this.store.updateRun(run.id, { agent });
     }
@@ -427,6 +435,10 @@ export class Runner extends EventEmitter<RunnerEvents> {
     let branch: string | null = null;
     let baseCommit: string | null = null;
     try {
+      if (run.mode === "command") {
+        await this.executeCommand(job, run, active, deadline);
+        return;
+      }
       if (run.mode === "ship") {
         await this.executeReleaseScript(job, run, active, deadline);
         return;
@@ -618,6 +630,39 @@ export class Runner extends EventEmitter<RunnerEvents> {
       if (worktree) await this.removeWorktree(job, worktree).catch(() => undefined);
       this.finish(run.id, { status: "failed", worktree: null, error: message.split("\n")[0] ?? message });
     }
+  }
+
+  /**
+   * A command job's run: its shell command in the job's directory, as is (no checkout, branch or
+   * commit), with the payload in PI_JOBS_PAYLOAD. A failure or timeout is retried like an agent's.
+   */
+  private async executeCommand(job: Job, run: Run, active: ActiveRun, deadline: number): Promise<void> {
+    let exitCode: number | null = null;
+    if (!job.command) throw new Error("This job has no command");
+    if (!existsSync(job.repoPath)) throw new Error(`The directory ${job.repoPath} doesn't exist`);
+    if (!active.stopReason) {
+      this.note(run.id, `Starting command in ${job.repoPath}: ${job.command}`);
+      const env: Record<string, string> = { PI_JOBS_TRIGGER: run.trigger, PI_JOBS_ATTEMPT: String(run.attempt) };
+      // A payload too big for the environment (macOS caps arguments plus environment near 1 MB) goes in a file.
+      if (run.payload && Buffer.byteLength(run.payload) <= MAX_PAYLOAD_ENV) env.PI_JOBS_PAYLOAD = run.payload.replaceAll("\0", "");
+      else if (run.payload) {
+        const file = path.join(this.logDir, `${run.id}.payload`);
+        writeFileSync(file, run.payload, { mode: 0o600 });
+        env.PI_JOBS_PAYLOAD_FILE = file;
+      }
+      // The directory is shared, unlike a worktree: never sweep processes by working directory.
+      exitCode = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.command], job.repoPath, deadline, env, { sweepCwd: false });
+      this.store.updateRun(run.id, { exitCode });
+      this.note(run.id, `Command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
+    }
+    const status = runStatus(active.stopReason, exitCode === 0);
+    const error =
+      active.stopReason === "interrupted"
+        ? INTERRUPTED
+        : status === "failed"
+          ? `The command exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`
+          : null;
+    this.finish(run.id, { status, error }, status === "timed_out" || (status === "failed" && active.stopReason !== "canceled"));
   }
 
   /** The command line of a run's agent, from Settings. */
@@ -849,6 +894,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
     cwd: string,
     deadline: number,
     extraEnv: Record<string, string> = {},
+    { sweepCwd = true } = {},
   ): Promise<number | null> {
     const fd = openSync(this.logPath(runId), "a");
     const env = { ...this.env, PI_JOBS_RUN_ID: String(runId), PI_JOBS_JOB_ID: String(active.jobId), PI_JOBS_RUN_TOKEN: active.token, ...extraEnv };
@@ -858,6 +904,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       env,
       stdio: ["ignore", fd, fd],
       token: active.token,
+      sweepCwd,
       onSpawn: () => {
         if (Date.now() >= deadline) active.stop("timed_out");
       },

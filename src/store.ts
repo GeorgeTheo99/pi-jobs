@@ -8,9 +8,10 @@ export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
  * A change run may commit to a branch; an ask run only answers, and its checkout is discarded. A
  * release: a "release" run has the agent release the item's result by the job's release instructions,
- * a "ship" run runs the job's release script (shipCommand, no agent) on it.
+ * a "ship" run runs the job's release script (shipCommand, no agent) on it. A command run runs a
+ * command job's shell command in its directory: no agent, worktree or branch.
  */
-export type RunMode = "change" | "ask" | "ship" | "release";
+export type RunMode = "change" | "ask" | "ship" | "release" | "command";
 /** Runs that release an item, by its agent or its release script. */
 export const RELEASE_MODES: readonly RunMode[] = ["ship", "release"];
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
@@ -19,11 +20,19 @@ export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queu
 /** Runs that haven't started, which the per-job queue limit counts. */
 export const WAITING_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued"];
 
+/** An agent job runs a coding agent in a worktree; a command job runs a shell command in a directory. */
+export type JobKind = "agent" | "command";
+
 export interface JobInput {
   name: string;
+  kind: JobKind;
+  /** The git repository an agent job works on, or the directory a command job runs in. */
   repoPath: string;
   baseRef: string;
+  /** An agent job's instructions; "" for a command job. */
   prompt: string;
+  /** A command job's shell command (run with /bin/sh -c); null for an agent job. */
+  command: string | null;
   /** Null means "use the default agent from settings". */
   agent: AgentId | null;
   /** Cron expression, or null for manual/webhook-only jobs. */
@@ -310,6 +319,8 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "auto_release", "INTEGER NOT NULL DEFAULT 0"],
   ["jobs", "verify_command", "TEXT"],
   ["runs", "requested_by", "TEXT"],
+  ["jobs", "kind", "TEXT NOT NULL DEFAULT 'agent'"],
+  ["jobs", "command", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -360,9 +371,11 @@ function toJob(row: Row): Job {
   return {
     id: Number(row.id),
     name: String(row.name),
+    kind: row.kind === "command" ? "command" : "agent",
     repoPath: String(row.repo_path),
     baseRef: String(row.base_ref),
     prompt: String(row.prompt),
+    command: (row.command as string | null) ?? null,
     agent: typeof row.agent === "string" && row.agent ? row.agent : null,
     schedule: (row.schedule as string | null) ?? null,
     webhookToken: (row.webhook_token as string | null) ?? null,
@@ -430,7 +443,7 @@ function toRun(row: Row): Run {
     followUpOf: num(row.follow_up_of),
     instructions: (row.instructions as string | null) ?? null,
     summary: (row.summary as string | null) ?? null,
-    mode: row.mode === "ask" || row.mode === "ship" || row.mode === "release" ? row.mode : "change",
+    mode: row.mode === "ask" || row.mode === "ship" || row.mode === "release" || row.mode === "command" ? row.mode : "change",
     itemId: Number(row.item_id ?? row.id),
     sessionId: (row.session_id as string | null) ?? null,
     requestedBy: (row.requested_by as string | null) ?? null,
@@ -578,13 +591,15 @@ export class Store {
     const ts = now();
     const result = this.db
       .prepare(
-        `INSERT INTO jobs (name, repo_path, base_ref, prompt, agent, schedule, webhook_token,
+        `INSERT INTO jobs (name, kind, command, repo_path, base_ref, prompt, agent, schedule, webhook_token,
            timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, ship_command,
            release_instructions, verify_command, auto_release, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
+        input.kind,
+        input.command,
         input.repoPath,
         input.baseRef,
         input.prompt,
@@ -612,7 +627,7 @@ export class Store {
   updateJob(id: number, input: JobInput, webhookToken: string | null): Job | null {
     this.db
       .prepare(
-        `UPDATE jobs SET name = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
+        `UPDATE jobs SET name = ?, kind = ?, command = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
            watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, verify_command = ?, auto_release = ?, enabled = ?,
            updated_at = ?
@@ -620,6 +635,8 @@ export class Store {
       )
       .run(
         input.name,
+        input.kind,
+        input.command,
         input.repoPath,
         input.baseRef,
         input.prompt,
@@ -689,10 +706,11 @@ export class Store {
     agent: AgentId,
     payload: string | null,
     status: "queued" | "awaiting_approval" = "queued",
+    mode: "change" | "command" = "change",
   ): Run {
     const result = this.db
-      .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(jobId, trigger, status, agent, payload, now());
+      .prepare("INSERT INTO runs (job_id, trigger, status, agent, payload, mode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(jobId, trigger, status, agent, payload, mode, now());
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE runs SET item_id = id WHERE id = ?").run(id);
     return this.getRun(id)!;

@@ -38,6 +38,8 @@ export function finishedNotification(run: Run, job: Job | null, retrying: boolea
       : { ...base, event: "release_failed", title: `Release failed: ${name}`, message: short(run.error ?? headline ?? "") };
   }
   if (run.status !== "succeeded") return { ...base, event: "failed", title: `Failed: ${name}`, message: short(run.error ?? headline) };
+  // A command job's output isn't a report: only its failures need the owner.
+  if (run.mode === "command") return null;
   const verdict = parseVerdict(run.summary);
   if (verdict === "needs_decision") return { ...base, event: "decision", title: `Needs your decision: ${name}`, message: short(headline) };
   if ((run.commits ?? 0) > 0) {

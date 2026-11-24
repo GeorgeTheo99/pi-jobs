@@ -95,6 +95,11 @@ test("releases: released once one succeeds; releasable with instructions or a sc
   assert.equal(pushedThenFailed.state, "failed");
 });
 
+test("a command run's output is never read as an agent's verdict", () => {
+  const item = itemView([run({ id: 9, mode: "command", agent: "command", summary: "Needs your decision: disk almost full" })], null);
+  assert.deepEqual([item.verdict, item.state], ["unknown", "closed"]);
+});
+
 test("verdicts read negations as not done, and real report headlines", () => {
   assert.equal(parseVerdict("**HS-E123817D: feature idea, needs the owner’s decision.**\n\n- found it"), "needs_decision");
   assert.equal(parseVerdict("**Implemented HS-E123817D and committed as `1f87d08`** — `feat: add reordering`."), "implemented");

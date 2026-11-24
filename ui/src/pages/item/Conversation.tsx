@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Markdown } from "@/components/Markdown";
 import { StatusPill } from "@/components/ui";
 import { isActive, isReleaseMode, type Run, type Verdict } from "@/lib/api";
-import { duration, relativeTime } from "@/lib/format";
+import { dateTime, duration, relativeTime } from "@/lib/format";
 import { VERDICT_LABELS, splitReply } from "@/lib/report";
 import { useNow } from "@/lib/usePoll";
 
@@ -23,7 +23,9 @@ export function RunPill({ run }: { run: Run }) {
   if (run.status !== "succeeded") return <StatusPill status={run.status} />;
   const verdict = run.verdict ?? "unknown";
   const [label, tone] =
-    isReleaseMode(run.mode)
+    run.mode === "command"
+      ? ["Succeeded", "pill-green"]
+      : isReleaseMode(run.mode)
       ? ["Released", "pill-violet"]
       : run.mode === "ask"
       ? ["Answered", "pill-muted"]
@@ -60,6 +62,7 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
   const ask = run.mode === "ask";
   const release = run.mode === "release";
   if (run.mode === "ship") return <ScriptReleaseTurn run={run} selected={selected} />;
+  if (run.mode === "command") return <CommandTurn run={run} selected={selected} />;
   return (
     <div className="grid gap-3">
       {run.instructions !== null && run.retryOf === null ? (
@@ -189,4 +192,52 @@ function ScriptReleaseTurn({ run, selected }: { run: Run; selected: boolean }) {
 function releasedBy(run: Run): string {
   if (run.requestedBy === "autoRelease") return " · automatic";
   return run.requestedBy ? ` · by ${run.requestedBy}` : "";
+}
+
+/** A command job's run: what started it, then the end of what its command printed. */
+function CommandTurn({ run, selected }: { run: Run; selected: boolean }) {
+  const now = useNow(1000);
+  const active = isActive(run.status);
+  const output = (run.summary ?? "").split("\n").slice(-SHIP_TAIL_LINES).join("\n");
+  return (
+    <div className="grid gap-3">
+      <p className="text-[12px] text-fog">
+        {run.retryOf !== null ? `Retry of #${run.retryOf} (attempt ${run.attempt})` : `${STARTED_BY[run.trigger]} · ${relativeTime(run.createdAt, now)}`}
+      </p>
+      <div className={`turn-agent ${selected ? "turn-selected" : ""}`} aria-current={selected ? "true" : undefined}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fog">
+          <span className="turn-label">Command</span>
+          <RunPill run={run} />
+          <Link to={`/runs/${run.id}`} className="font-mono hover:text-bone" title="Select this run for its details and log">
+            #{run.id}
+          </Link>
+          {run.startedAt && <span>{duration(run.startedAt, run.finishedAt, now)}</span>}
+          {run.exitCode !== null && <span className="font-mono">exit {run.exitCode}</span>}
+        </div>
+        {run.status === "queued" ? (
+          <p className="text-[14px] text-fog">
+            {run.notBefore && Date.parse(run.notBefore) > now ? `Retrying at ${dateTime(run.notBefore)}.` : "Waiting for a free slot. It starts as soon as another run finishes."}
+          </p>
+        ) : run.status === "running" ? (
+          <p className="text-[14px] text-fog">
+            Running…{" "}
+            {!selected && (
+              <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
+                Watch the log
+              </Link>
+            )}
+          </p>
+        ) : (
+          <>
+            {run.error && <p className="text-[14px] text-red">{run.error}</p>}
+            {output ? (
+              <pre className="log-view max-h-80 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{output}</pre>
+            ) : (
+              !active && <p className="text-[14px] text-fog">The command printed nothing.</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
 }

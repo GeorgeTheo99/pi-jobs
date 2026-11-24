@@ -17,6 +17,8 @@ test("finished runs notify only when they need the owner", () => {
   assert.equal(finishedNotification(run({ status: "failed", error: "boom" }), job, false)?.event, "failed");
   assert.equal(finishedNotification(run({ status: "failed" }), job, true), null, "a retry is coming");
   assert.equal(finishedNotification(run({ mode: "ask", summary: "Answer" }), job, false), null);
+  assert.equal(finishedNotification(run({ mode: "command", summary: "Needs your decision: disk full" }), job, false), null, "a command's output isn't a report");
+  assert.equal(finishedNotification(run({ mode: "command", status: "failed", error: "exit 1" }), job, false)?.event, "failed");
   assert.equal(finishedNotification(run({ summary: "Nothing to do" }), job, false), null);
   assert.equal(finishedNotification(run({ mode: "release" }), job, false)?.event, "released");
   assert.equal(finishedNotification(run({ mode: "ship", status: "failed", error: "exit 1" }), job, false)?.event, "release_failed");

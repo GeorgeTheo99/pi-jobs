@@ -25,9 +25,11 @@ export const MAX_ACTIONS = 20;
 /** Fields an action may set on a job, in the order cards show them. */
 const JOB_FIELDS = [
   "name",
+  "kind",
   "repoPath",
   "baseRef",
   "prompt",
+  "command",
   "agent",
   "schedule",
   "webhookEnabled",
@@ -49,6 +51,7 @@ type JobField = (typeof JOB_FIELDS)[number];
 /** Changing these runs commands, publishes branches, opens a webhook or moves the job: always shown in full and applied alone. */
 const RISKY_JOB_FIELDS: ReadonlySet<JobField> = new Set([
   "repoPath",
+  "command",
   "checkCommand",
   "watchCommand",
   "shipCommand",
@@ -106,9 +109,11 @@ function findRun(args: Record<string, unknown>, store: Store): Run {
 export function jobBody(job: Job): Record<JobField, unknown> {
   return {
     name: job.name,
+    kind: job.kind,
     repoPath: job.repoPath,
     baseRef: job.baseRef,
     prompt: job.prompt,
+    command: job.command ?? "",
     agent: job.agent,
     schedule: job.schedule ?? "",
     webhookEnabled: job.webhookToken !== null,
@@ -213,7 +218,7 @@ const watchSummary = (response: unknown) => {
 
 const DEFINITIONS: Record<string, Definition> = {
   create_job: {
-    help: `create_job {"job": {name, repoPath, prompt, ...optional job fields}}: a new job. Job fields: ${JOB_FIELDS.join(", ")}.`,
+    help: `create_job {"job": {name, repoPath, prompt, ...optional job fields}}: a new agent job; or {"job": {name, "kind": "command", repoPath (any directory), command (a shell command), ...}} for a job that runs the command on its triggers without an agent (no baseRef, prompt, agent, checkCommand, watchCommand, pushBranch or release fields; it has no follow-ups). Job fields: ${JOB_FIELDS.join(", ")}.`,
     plan(args) {
       const fields = jobFields(args.job, "job");
       const changed = JOB_FIELDS.filter((field) => fields[field] !== undefined);

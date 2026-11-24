@@ -74,7 +74,9 @@ export function jobRoutes(ctx: AppContext): Route[] {
         const runIds = store.runIdsForJob(job.id);
         scheduler.remove(job.id);
         store.deleteJob(job.id);
-        await Promise.all(runIds.map((runId) => rm(runner.logPath(runId), { force: true })));
+        await Promise.all(
+          runIds.flatMap((runId) => [rm(runner.logPath(runId), { force: true }), rm(runner.logPath(runId).replace(/\.log$/, ".payload"), { force: true })]),
+        );
         return { ok: true };
       },
     ],

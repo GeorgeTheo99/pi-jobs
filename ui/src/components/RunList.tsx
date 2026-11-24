@@ -36,7 +36,7 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
                 <div className="truncate text-[12px] text-fog">
                   {jobNames && headline && `${jobNames.get(run.jobId) ?? "Deleted job"} · `}
                   {!titledByTrigger && `${TRIGGER_LABELS[run.trigger]} · `}
-                  {agentLabel(run.agent)} · {relativeTime(run.createdAt, now)}
+                  {run.mode === "command" ? "Command" : agentLabel(run.agent)} · {relativeTime(run.createdAt, now)}
                   {run.followUpOf !== null && ` · ${run.mode === "ask" ? "question" : run.mode === "ship" ? "ship" : run.mode === "release" ? "release" : "follow-up"} after #${run.followUpOf}`}
                   {run.attempt > 1 && ` · attempt ${run.attempt}`}
                   {compact && (run.commits ?? 0) > 0 && <span className="text-bone"> · +{run.commits}</span>}

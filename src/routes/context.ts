@@ -47,7 +47,7 @@ export function createContext(base: Pick<AppContext, "config" | "store" | "runne
     },
     jobView: (job, latest = store.latestRuns().get(job.id) ?? null) => ({
       ...job,
-      effectiveAgent: job.agent ?? store.getSettings().defaultAgent,
+      effectiveAgent: job.kind === "command" ? "command" : (job.agent ?? store.getSettings().defaultAgent),
       nextRunAt: scheduler.nextRun(job.id),
       lastRun: latest,
       webhookPath: `/api/hooks/${job.id}`,

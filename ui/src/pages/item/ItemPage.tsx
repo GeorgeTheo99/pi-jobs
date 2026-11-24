@@ -150,7 +150,7 @@ export function ItemPage() {
 
       {item.canRelease && job && <ReleaseBox key={`release-${item.latest.id}`} item={item} job={job} onReleased={() => void poll.refresh()} />}
 
-      {!waiting && (
+      {!waiting && job?.kind !== "command" && run.mode !== "command" && (
         <Composer
           key={`composer-${item.root.id}`}
           item={item}
@@ -203,8 +203,14 @@ function ItemHeader({ item, job, actions }: { item: Item; job: Job | null; actio
           <ItemPill item={item} />
           <span>
             {item.runs.length} run{item.runs.length === 1 ? "" : "s"}
-            {agents.length > 0 && ` · ${agents.map(agentLabel).join(", ")}`}
-            {job && ` on ${repoName(job.repoPath)}`}
+            {job?.kind === "command" ? (
+              ` · Command in ${repoName(job.repoPath)}`
+            ) : (
+              <>
+                {agents.length > 0 && ` · ${agents.map(agentLabel).join(", ")}`}
+                {job && ` on ${repoName(job.repoPath)}`}
+              </>
+            )}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">{actions}</div>

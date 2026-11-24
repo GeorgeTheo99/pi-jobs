@@ -33,6 +33,8 @@ export function setup() {
   };
   const jobInput = (overrides: Partial<JobInput> = {}): JobInput => ({
     name: "Nightly check",
+    kind: "agent",
+    command: null,
     repoPath: repo,
     baseRef: "main",
     prompt: "Do the thing",

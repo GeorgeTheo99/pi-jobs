@@ -16,7 +16,7 @@ export function RunDetails({ run, job }: { run: Run; job: Job | null }) {
         ? `${run.mode === "ask" ? "Question" : run.mode === "ship" || run.mode === "release" ? "Release" : "Change request"} after #${run.followUpOf}`
         : TRIGGER_LABELS[run.trigger],
     ],
-    ["Agent", run.mode === "ship" ? "None (release script)" : agentLabel(run.agent)],
+    ["Agent", run.mode === "ship" ? "None (release script)" : run.mode === "command" ? "None (command job)" : agentLabel(run.agent)],
     ["Started by", run.requestedBy === "autoRelease" ? "Release automatically" : (run.requestedBy ?? (run.followUpOf === null && run.trigger !== "manual" ? `Its ${TRIGGER_LABELS[run.trigger].toLowerCase()}` : "—"))],
     ["Created", dateTime(run.createdAt)],
     [
@@ -41,7 +41,10 @@ export function RunDetails({ run, job }: { run: Run; job: Job | null }) {
       </Link>,
     ]);
   }
-  if (job) rows.push(["Repository", <span key="repo" className="font-mono text-[12px]">{job.repoPath}</span>]);
+  if (job && job.kind === "command") {
+    rows.push(["Directory", <span key="dir" className="font-mono text-[12px]">{job.repoPath}</span>]);
+    rows.push(["Command", <span key="cmd" className="font-mono text-[12px]">{job.command}</span>]);
+  } else if (job) rows.push(["Repository", <span key="repo" className="font-mono text-[12px]">{job.repoPath}</span>]);
   if (run.worktree) rows.push(["Worktree (kept)", <span key="wt" className="font-mono text-[12px]">{run.worktree}</span>]);
   return (
     <Disclosure title="Run details">

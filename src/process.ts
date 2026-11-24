@@ -34,9 +34,9 @@ export function signalGroup(pid: number | undefined, signal: NodeJS.Signals): vo
 /**
  * SIGKILLs every process left over from a run: those that inherited its PI_JOBS_RUN_TOKEN (macOS
  * `ps -E`; platform binaries hide their environment) and those whose working directory is inside
- * the run's worktree.
+ * the run's worktree (unless it is null: a command job's directory is shared).
  */
-export async function killRunProcesses(token: string, worktree: string): Promise<void> {
+export async function killRunProcesses(token: string, worktree: string | null): Promise<void> {
   const pids = new Set<number>();
   const marker = `PI_JOBS_RUN_TOKEN=${token}`;
   for (const line of (await commandOutput("ps", ["-AEww", "-o", "pid=,command="])).split("\n")) {
@@ -44,7 +44,7 @@ export async function killRunProcesses(token: string, worktree: string): Promise
   }
   // lsof -F prints "p<pid>" then "n<cwd>" for each process.
   let pid = 0;
-  for (const line of (await commandOutput("lsof", ["-nP", "-d", "cwd", "-Fpn"])).split("\n")) {
+  for (const line of worktree === null ? [] : (await commandOutput("lsof", ["-nP", "-d", "cwd", "-Fpn"])).split("\n")) {
     if (line.startsWith("p")) pid = Number(line.slice(1));
     else if (line.startsWith("n") && (line.slice(1) === worktree || line.startsWith(`n${worktree}/`))) pids.add(pid);
   }
@@ -95,6 +95,8 @@ export interface GroupOptions {
   onSpawn?: (child: ChildProcess) => void;
   /** Called once when it has exited, before leftovers are reaped (to close a log file, say). */
   onExit?: () => void;
+  /** Also reap processes working inside `cwd` (default); off for a shared directory, such as a command job's. */
+  sweepCwd?: boolean;
 }
 
 /**
@@ -134,7 +136,7 @@ export function runInGroup(handle: ProcessHandle, options: GroupOptions): Promis
       settle(() => {
         // Reap anything left running: the group, plus processes started in other sessions (Pi's bash tool detaches each command).
         signalGroup(child.pid, "SIGKILL");
-        void killRunProcesses(token, realCwd).finally(() => resolve(code));
+        void killRunProcesses(token, options.sweepCwd === false ? null : realCwd).finally(() => resolve(code));
       }),
     );
   });

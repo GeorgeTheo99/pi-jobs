@@ -6,6 +6,8 @@ import type { Job } from "../src/store.ts";
 const job = (overrides: Partial<Job> = {}): Job => ({
   id: 1,
   name: "Daily",
+  kind: "agent",
+  command: null,
   repoPath: "/r",
   baseRef: "main",
   prompt: "p",

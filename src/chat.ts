@@ -71,10 +71,12 @@ function jobState(job: Job, store: Store, nextRun: ChatRunnerOptions["nextRun"],
   return {
     id: job.id,
     name: job.name,
+    kind: job.kind,
+    command: job.command,
     repoPath: job.repoPath,
     baseRef: job.baseRef,
     enabled: job.enabled,
-    agent: job.agent ?? `default (${store.getSettings().defaultAgent})`,
+    agent: job.kind === "command" ? null : (job.agent ?? `default (${store.getSettings().defaultAgent})`),
     schedule: job.schedule,
     nextRunAt: nextRun?.(job.id) ?? null,
     // Whether the webhook is on, never its token.

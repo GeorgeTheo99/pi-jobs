@@ -20,18 +20,34 @@ export function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Jo
           Start this run?
         </h2>
         <p className="max-w-[72ch] text-[14px] leading-relaxed text-fog">
-          {/* Runs take the job's agent when they start. */}
-          {APPROVAL_REASONS[run.trigger]} Approving starts {agentLabel(job?.effectiveAgent ?? run.agent)}
-          {job ? (
+          {APPROVAL_REASONS[run.trigger]}{" "}
+          {run.mode === "command" ? (
             <>
-              {" "}
-              on a new branch of <span className="font-mono text-bone">{repoName(job.repoPath)}</span> from{" "}
-              <span className="font-mono text-bone">{job.baseRef}</span>
+              Approving runs <span className="font-mono text-bone">{job?.command ?? "the job's command"}</span>
+              {job && (
+                <>
+                  {" "}
+                  in <span className="font-mono text-bone">{job.repoPath}</span>
+                </>
+              )}
+              , as you.
             </>
           ) : (
-            " on a new branch"
+            <>
+              {/* Runs take the job's agent when they start. */}
+              Approving starts {agentLabel(job?.effectiveAgent ?? run.agent)}
+              {job ? (
+                <>
+                  {" "}
+                  on a new branch of <span className="font-mono text-bone">{repoName(job.repoPath)}</span> from{" "}
+                  <span className="font-mono text-bone">{job.baseRef}</span>
+                </>
+              ) : (
+                " on a new branch"
+              )}
+              , following the job's instructions{run.payload ? " for this item" : ""}. Starting it releases nothing: that is a separate approval once you've reviewed the result.
+            </>
           )}
-          , following the job's instructions{run.payload ? " for this item" : ""}. Starting it releases nothing: that is a separate approval once you've reviewed the result.
         </p>
       </div>
 
@@ -54,7 +70,7 @@ export function Approval({ run, job, onApprove, onDismiss }: { run: Run; job: Jo
         </Disclosure>
       )}
 
-      {job && (
+      {job && run.mode !== "command" && (
         <Disclosure title="Instructions the agent will follow">
           <pre className="log-view max-h-72 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{job.prompt}</pre>
         </Disclosure>

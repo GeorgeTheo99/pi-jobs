@@ -29,7 +29,7 @@ export function agentOutput(log: string): string {
   const start = lines.findIndex((line) => note.test(line) && line.replace(note, "").startsWith("Starting "));
   if (start === -1) return "";
   const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => note.test(line) && /^(Agent exited|Ship command exited|Release script exited|Running check:|Running verify command:)/.test(line.replace(note, "")));
+  const end = rest.findIndex((line) => note.test(line) && /^(Agent exited|Ship command exited|Release script exited|Command exited|Running check:|Running verify command:)/.test(line.replace(note, "")));
   return (end === -1 ? rest : rest.slice(0, end))
     .filter((line) => !note.test(line) && !PI_NEW_SESSION.test(line))
     .join("\n")

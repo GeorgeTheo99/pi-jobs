@@ -32,7 +32,8 @@ export function runView(run: Run, merged: boolean): RunView {
     ...run,
     summaryHeadline: summaryHeadline(run.summary),
     summaryVerdict: summaryVerdict(run.summary),
-    verdict: parseVerdict(run.summary),
+    // A command prints output, not a verdict.
+    verdict: run.mode === "command" ? "unknown" : parseVerdict(run.summary),
     merged,
   };
 }
