@@ -66,8 +66,9 @@ test("names webhook and watch runs by their payload", () => {
       <RunList runs={[waiting]} jobNames={new Map([[1, "Support triage"]])} />
     </MemoryRouter>,
   );
-  expect(screen.getByText("Support triage")).toBeTruthy();
+  // The report leads; the job's name follows in the details line.
   expect(screen.getByText("Let me reorder scenes")).toBeTruthy();
+  expect(screen.getByText(/Support triage · Watch · Pi/)).toBeTruthy();
   unmount();
   render(
     <MemoryRouter>

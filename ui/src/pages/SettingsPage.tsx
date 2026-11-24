@@ -61,10 +61,10 @@ function SettingsForm({ initial }: { initial: Settings }) {
     setError(null);
     setFields({});
     try {
-      const { defaultAgent, maxConcurrent } = settings;
+      const { defaultAgent, maxConcurrent, notifyCommand, publicUrl } = settings;
       // An agent typed into Add but not added yet is saved too, rather than dropped.
       const agents = addId && !addError ? { ...settings.agents, [addId]: { command: newCommand.trim() || `${addId} -p {prompt}` } } : settings.agents;
-      setSettings(await api.saveSettings({ defaultAgent, agents, maxConcurrent }));
+      setSettings(await api.saveSettings({ defaultAgent, agents, maxConcurrent, notifyCommand, publicUrl }));
       setNewId("");
       setNewCommand("");
       setSaved(true);
@@ -219,6 +219,44 @@ function SettingsForm({ initial }: { initial: Settings }) {
         </fieldset>
 
         <fieldset className="grid gap-4">
+          <legend className="section-label mb-3">Notifications</legend>
+          <p className="-mt-1 text-[13px] text-fog">
+            A command pi-jobs runs when something needs you: a run to approve, work to review or decide on, a failure, a release that went
+            out or failed, a watch that stopped working. It gets <code className="font-mono text-bone">PI_JOBS_EVENT</code>,{" "}
+            <code className="font-mono text-bone">PI_JOBS_TITLE</code>, <code className="font-mono text-bone">PI_JOBS_MESSAGE</code> and{" "}
+            <code className="font-mono text-bone">PI_JOBS_URL</code>, so any service works, for example{" "}
+            <code className="font-mono text-bone">{'curl -fsS -H "Title: $PI_JOBS_TITLE" -H "Click: $PI_JOBS_URL" -d "$PI_JOBS_MESSAGE" ntfy.sh/your-topic'}</code>.
+          </p>
+          <Field label="Notify command" error={fields.notifyCommand}>
+            {(p) => (
+              <input
+                {...p}
+                className="field font-mono text-[13px]"
+                value={settings.notifyCommand ?? ""}
+                spellCheck={false}
+                autoCapitalize="off"
+                placeholder="Empty: no notifications"
+                onChange={(e) => update({ notifyCommand: e.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Address of this UI" error={fields.publicUrl} hint="For links in notifications, as you open it from your phone. Empty: the server's local address.">
+            {(p) => (
+              <input
+                {...p}
+                className="field font-mono text-[13px]"
+                value={settings.publicUrl ?? ""}
+                spellCheck={false}
+                autoCapitalize="off"
+                placeholder="https://host.example.ts.net/pi-jobs"
+                onChange={(e) => update({ publicUrl: e.target.value })}
+              />
+            )}
+          </Field>
+          <NotifyTest disabled={!settings.notifyCommand} />
+        </fieldset>
+
+        <fieldset className="grid gap-4">
           <legend className="section-label mb-3">Capacity</legend>
           <div className="max-w-[220px]">
             <Field label="Runs at the same time" error={fields.maxConcurrent} hint="One run per job at a time either way.">
@@ -237,7 +275,7 @@ function SettingsForm({ initial }: { initial: Settings }) {
           </div>
         </fieldset>
 
-        <div className="flex flex-wrap items-center gap-3 border-t border-steel/35 pt-5">
+        <div className="save-bar flex flex-wrap items-center gap-3">
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? "Saving…" : "Save settings"}
           </button>
@@ -246,5 +284,32 @@ function SettingsForm({ initial }: { initial: Settings }) {
         </div>
       </form>
     </>
+  );
+}
+
+/** Sends a test notification with the saved command and says how it went. */
+function NotifyTest({ disabled }: { disabled: boolean }) {
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        disabled={disabled || sending}
+        title={disabled ? "Save a notify command first" : undefined}
+        onClick={() => {
+          setSending(true);
+          setResult(null);
+          api.testNotification().then(
+            (res) => setResult(res.ok ? { ok: true, text: "Sent. Check that it arrived." } : { ok: false, text: res.error ?? "It failed" }),
+            (err: Error) => setResult({ ok: false, text: err.message }),
+          ).finally(() => setSending(false));
+        }}
+      >
+        {sending ? "Sending…" : "Send a test notification"}
+      </button>
+      {result && <span className={`text-[13px] ${result.ok ? "text-green" : "text-red"}`}>{result.text}</span>}
+    </div>
   );
 }

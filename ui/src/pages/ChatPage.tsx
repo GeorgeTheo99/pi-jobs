@@ -112,7 +112,7 @@ export function ChatsPage() {
   return (
     <>
       <PageHeader title="Chat" meta="Manage jobs by asking: the agent proposes, you apply." />
-      <div className="mx-auto grid max-w-[880px] gap-8">
+      <div className="grid max-w-[880px] gap-8">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>{(jobId !== undefined || runId !== undefined) && <About jobId={jobId ?? null} runId={runId ?? null} />}</div>
@@ -366,7 +366,7 @@ export function ChatPage() {
   };
 
   return (
-    <article className="mx-auto grid max-w-[880px] gap-7">
+    <article className="grid max-w-[880px] gap-7">
       <header className="grid gap-3">
         <div className="flex flex-wrap items-center gap-2 text-[13px] text-fog">
           <Link to="/chats" className="hover:text-bone">

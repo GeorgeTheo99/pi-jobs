@@ -2,7 +2,7 @@ import { CalendarClock, Play, Plus, RadioTower, Webhook } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AgentBadge, ErrorNote, PageHeader, Skeleton, StatusPill, Switch } from "@/components/ui";
-import { api, jobToDraft, type Job } from "@/lib/api";
+import { api, type Job } from "@/lib/api";
 import { describeSchedule, relativeTime, repoName } from "@/lib/format";
 import { useNow, usePoll } from "@/lib/usePoll";
 
@@ -26,7 +26,7 @@ export function JobsPage() {
     setActionError(null);
     setData((current) => current?.map((j) => (j.id === job.id ? { ...j, enabled } : j)) ?? null);
     try {
-      await api.updateJob(job.id, { ...jobToDraft(job), enabled });
+      await api.patchJob(job.id, { enabled });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -56,7 +56,7 @@ export function JobsPage() {
             {jobs.map((job) => (
               <li
                 key={job.id}
-                className={`grid items-center gap-x-5 gap-y-2 px-4 py-3.5 transition-colors duration-150 hover:bg-inkwell/70 sm:px-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1.2fr)_auto_minmax(0,1fr)_auto] ${
+                className={`grid items-center gap-x-5 gap-y-2 px-4 py-3.5 transition-colors duration-150 hover:bg-inkwell/70 sm:px-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1.3fr)_auto_minmax(150px,1fr)_auto] ${
                   job.enabled ? "" : "opacity-60"
                 }`}
               >
@@ -72,7 +72,7 @@ export function JobsPage() {
                 <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
                   <span className="inline-flex items-center gap-1.5 text-bone">
                     <CalendarClock aria-hidden className="size-3.5 text-fog" />
-                    {describeSchedule(job.schedule)}
+                    {job.watchCommand && job.schedule ? `Checks ${describeSchedule(job.schedule).toLowerCase()}` : describeSchedule(job.schedule)}
                   </span>
                   {job.nextRunAt && <span className="text-fog">next {relativeTime(job.nextRunAt, now)}</span>}
                   {job.webhookToken && (
@@ -88,6 +88,11 @@ export function JobsPage() {
                     </span>
                   )}
                   {job.approveRuns && <span className="text-fog">Approve first</span>}
+                  {job.autoRelease && (
+                    <span className="font-semibold text-amber" title="Runs that pass their check with implemented work are released without asking">
+                      Releases automatically
+                    </span>
+                  )}
                 </div>
 
                 <div>
@@ -97,7 +102,9 @@ export function JobsPage() {
                 <div className="flex min-w-0 items-center gap-2.5 text-[13px]">
                   {job.lastRun ? (
                     <Link to={`/runs/${job.lastRun.id}`} className="flex items-center gap-2.5 hover:text-bone">
-                      <StatusPill status={job.lastRun.status} />
+                      <span className="shrink-0">
+                        <StatusPill status={job.lastRun.status} />
+                      </span>
                       <span className="truncate text-fog">{relativeTime(job.lastRun.createdAt, now)}</span>
                     </Link>
                   ) : (

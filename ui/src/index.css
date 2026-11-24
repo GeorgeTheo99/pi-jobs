@@ -414,6 +414,21 @@
     background: rgb(65 90 119 / 0.18);
   }
 
+  /* A long form's Save stays in reach while it scrolls (above the tab bar on phones). */
+  .save-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    padding-block: 12px;
+    border-top: 1px solid rgb(65 90 119 / 0.4);
+    background: rgb(13 27 42 / 0.96);
+  }
+  @media (max-width: 767px) {
+    .save-bar {
+      bottom: calc(64px + var(--safe-bottom));
+    }
+  }
+
   /* On phones, a decision's buttons stay reachable above the tab bar while the item scrolls. */
   @media (max-width: 767px) {
     .sticky-actions {

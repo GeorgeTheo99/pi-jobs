@@ -35,6 +35,7 @@ const EMPTY_DRAFT: JobDraft = {
   watchCommand: "",
   shipCommand: "",
   releaseInstructions: "",
+  verifyCommand: "",
   autoRelease: false,
   approveRuns: false,
   enabled: true,
@@ -77,7 +78,10 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
     setError(null);
     setFields({});
     try {
-      const saved = job ? await api.updateJob(job.id, draft) : await api.createJob(draft);
+      // Pausing happens in the header, at once; saving the form leaves it as it is.
+      const changes: Partial<JobDraft> = { ...draft };
+      delete changes.enabled;
+      const saved = job ? await api.patchJob(job.id, changes) : await api.createJob(draft);
       onSaved(saved);
       setSavedAt(Date.now());
       if (!job) navigate(`/jobs/${saved.id}`, { replace: true });
@@ -130,6 +134,16 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 <MessagesSquare aria-hidden className="size-3.5" />
                 Chat about it
               </Link>
+              <label className="flex items-center gap-2 text-[13px] text-fog">
+                {job.enabled ? "Enabled" : "Paused"}
+                <Switch
+                  checked={job.enabled}
+                  label={job.enabled ? `Pause ${job.name}` : `Resume ${job.name}`}
+                  onChange={(value) =>
+                    void api.patchJob(job.id, { enabled: value }).then(onSaved, (err: Error) => setError(err.message))
+                  }
+                />
+              </label>
               <button type="button" className="btn btn-ghost" onClick={() => void runNow()}>
                 <Play aria-hidden className="size-3.5" />
                 Run now
@@ -314,12 +328,6 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
               checked={draft.pushBranch}
               onChange={(v) => set("pushBranch", v)}
             />
-            <ToggleRow
-              label="Enabled"
-              hint="Paused jobs ignore their schedule and webhook. You can still run them by hand."
-              checked={draft.enabled}
-              onChange={(v) => set("enabled", v)}
-            />
           </Section>
 
           <Section title="Release">
@@ -359,16 +367,36 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 />
               )}
             </Field>
+            <Field
+              label="Verify command"
+              error={fields.verifyCommand}
+              hint="Optional. Runs after a release (a health check, say); the release fails unless it exits 0."
+            >
+              {(p) => (
+                <input
+                  {...p}
+                  className="field font-mono text-[13px]"
+                  value={draft.verifyCommand}
+                  onChange={(e) => set("verifyCommand", e.target.value)}
+                  placeholder="curl -fsS http://127.0.0.1:8100/api/health"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                />
+              )}
+            </Field>
             <ToggleRow
               label="Release automatically"
-              hint="Release every run that succeeds with changes, without waiting for you. Leave off to review first."
+              hint="Release each run whose check passed and whose report says the work was implemented or fixed, without waiting for you. Proposals, failures and unchecked work still wait. Needs a check command."
               checked={draft.autoRelease}
-              onChange={(v) => set("autoRelease", v)}
+              onChange={(v) => {
+                if (v && !window.confirm("Release automatically? Work that passes its check will merge, push and deploy without your review.")) return;
+                set("autoRelease", v);
+              }}
             />
             {fields.autoRelease && <p className="-mt-3 text-[12px] text-red">{fields.autoRelease}</p>}
           </Section>
 
-          <div className="flex flex-wrap items-center gap-3 border-t border-steel/35 pt-5">
+          <div className="save-bar flex flex-wrap items-center gap-3">
             <button type="submit" className="btn btn-primary" disabled={saving}>
               {saving ? "Saving…" : job ? "Save changes" : "Create job"}
             </button>

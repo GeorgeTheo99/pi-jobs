@@ -1,5 +1,5 @@
 import { Check, Copy, LoaderCircle } from "lucide-react";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { agentLabel, type AgentId, type RunStatus } from "@/lib/api";
 
 const STATUS_STYLES: Record<RunStatus, { label: string; className: string }> = {
@@ -146,5 +146,35 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
         <div key={i} className="h-[60px] animate-pulse bg-inkwell/60 motion-reduce:animate-none" />
       ))}
     </div>
+  );
+}
+
+export function Section({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
+  return (
+    <section className="grid gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="section-heading">{title}</h2>
+        {aside}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** A collapsible section. `defaultOpen` applies on mount only, so a re-render never folds what the reader opened. */
+export function Disclosure({ title, children, defaultOpen = false }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.open = defaultOpen;
+    // Mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <details ref={ref} className="group overflow-hidden rounded-[12px] border border-steel/30">
+      <summary className="flex min-h-11 cursor-pointer items-center px-4 text-[13px] font-semibold text-fog hover:text-bone">
+        {title}
+      </summary>
+      <div className="border-t border-steel/30">{children}</div>
+    </details>
   );
 }

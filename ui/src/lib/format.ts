@@ -46,7 +46,16 @@ export const SCHEDULE_PRESETS: { label: string; expression: string }[] = [
 
 export function describeSchedule(expression: string | null): string {
   if (!expression) return "No schedule";
-  return SCHEDULE_PRESETS.find((p) => p.expression === expression)?.label ?? expression;
+  const preset = SCHEDULE_PRESETS.find((p) => p.expression === expression)?.label;
+  if (preset) return preset;
+  // Common steps read as words: "*/15 * * * *" is every 15 minutes, "0 */2 * * *" every 2 hours.
+  const minutes = /^\*\/(\d+) \* \* \* \*$/.exec(expression);
+  if (minutes) return `Every ${minutes[1]} min`;
+  const hours = /^0 \*\/(\d+) \* \* \*$/.exec(expression);
+  if (hours) return `Every ${hours[1]} hours`;
+  const daily = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(expression);
+  if (daily) return `Daily ${daily[2]}:${daily[1]!.padStart(2, "0")}`;
+  return expression;
 }
 
 /** Keys whose string value best says what a webhook or watch item is about, in order of preference. */

@@ -16,10 +16,14 @@ test("duration formats running and finished runs", () => {
   expect(duration("2026-11-09T09:30:00Z", null, NOW)).toBe("2h 30m");
 });
 
-test("describeSchedule names presets and passes other cron through", () => {
+test("describeSchedule names presets and common steps, and passes other cron through", () => {
   expect(describeSchedule(null)).toBe("No schedule");
   expect(describeSchedule("0 6 * * *")).toBe("Daily 6:00");
-  expect(describeSchedule("*/10 * * * *")).toBe("*/10 * * * *");
+  expect(describeSchedule("*/10 * * * *")).toBe("Every 10 min");
+  expect(describeSchedule("0 */2 * * *")).toBe("Every 2 hours");
+  expect(describeSchedule("30 7 * * *")).toBe("Daily 7:30");
+  expect(describeSchedule("0 9 * * 1-5")).toBe("Weekdays 9:00");
+  expect(describeSchedule("5 4 1 * *")).toBe("5 4 1 * *");
 });
 
 test("repoName uses the last path segment", () => {

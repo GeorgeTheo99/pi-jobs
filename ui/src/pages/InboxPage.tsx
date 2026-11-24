@@ -17,6 +17,7 @@ export function InboxPage() {
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [checkError, setCheckError] = useState<Error | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [bulkError, setBulkError] = useState<Error | null>(null);
   const now = useNow(30_000);
 
   const watchJobs = jobList?.filter((job) => job.watchCommand && job.enabled) ?? [];
@@ -48,13 +49,26 @@ export function InboxPage() {
   };
 
   const pick = (states: readonly ItemState[]) => items?.filter((item) => states.includes(item.state)) ?? [];
-  // Oldest first: the report that has waited longest is next.
-  const waiting = [...pick(WAITING_STATES)].sort(
-    (a, b) => WAITING_STATES.indexOf(a.state) - WAITING_STATES.indexOf(b.state) || a.latest.id - b.latest.id,
-  );
+  // Failures first (a half-done release most of all), then approvals, decisions and reviews; oldest first within each.
+  const order: ItemState[] = ["failed", "approval", "decision", "review"];
+  const waiting = [...pick(WAITING_STATES)].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.latest.id - b.latest.id);
+  const approvals = waiting.filter((item) => item.state === "approval");
   const running = pick(["running"]);
-  const review = pick(["review"]);
-  const recent = pick(["failed", "released", "merged", "closed"]);
+  const recent = pick(["released", "merged", "closed"]);
+
+  const bulk = async (action: "approve" | "dismiss") => {
+    setBulkError(null);
+    try {
+      for (const item of approvals) {
+        const run = item.runs.find((r) => r.status === "awaiting_approval");
+        if (run) await (action === "approve" ? api.approveRun(run.id) : api.cancelRun(run.id));
+      }
+    } catch (err) {
+      setBulkError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      await refresh();
+    }
+  };
 
   return (
     <>
@@ -80,7 +94,7 @@ export function InboxPage() {
         }
       />
       <div className="grid gap-8">
-        <ErrorNote error={checkError ?? error} />
+        <ErrorNote error={checkError ?? bulkError ?? error} />
         {checkNote && (
           <p role="status" className="-mt-4 text-[13px] text-fog">
             {checkNote}
@@ -93,7 +107,30 @@ export function InboxPage() {
         ) : (
           <>
             {waiting.length > 0 ? (
-              <Section title="Waiting for you" count={waiting.length}>
+              <Section
+                title="Waiting for you"
+                count={waiting.length}
+                aside={
+                  approvals.length > 1 && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => window.confirm(`Dismiss all ${approvals.length} waiting runs without running them?`) && void bulk("dismiss")}
+                      >
+                        Dismiss all {approvals.length}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => window.confirm(`Start all ${approvals.length} waiting runs? Each one starts an agent.`) && void bulk("approve")}
+                      >
+                        Start all {approvals.length}
+                      </button>
+                    </div>
+                  )
+                }
+              >
                 <ul className="grid gap-3">
                   {waiting.map((item) => (
                     <WaitingCard key={item.root.id} item={item} job={jobs.get(item.root.jobId)} onChanged={() => void refresh()} />
@@ -104,7 +141,6 @@ export function InboxPage() {
               <p className="-mt-2 text-[14px] text-fog">Nothing needs you right now.</p>
             )}
             {running.length > 0 && <ItemSection title="In progress" items={running} jobs={jobs} />}
-            {review.length > 0 && <ItemSection title="To review" items={review} jobs={jobs} />}
             {recent.length > 0 && (
               <Section title="Recent">
                 <ItemList items={showAll ? recent : recent.slice(0, RECENT_LIMIT)} jobs={jobs} />
@@ -122,13 +158,16 @@ export function InboxPage() {
   );
 }
 
-function Section({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+function Section({ title, count, aside, children }: { title: string; count?: number; aside?: ReactNode; children: ReactNode }) {
   return (
     <section className="grid gap-3">
-      <h2 className="section-label">
-        {title}
-        {count !== undefined && <span className="ml-1.5 text-amber">{count}</span>}
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="section-label">
+          {title}
+          {count !== undefined && <span className="ml-1.5 text-amber">{count}</span>}
+        </h2>
+        {aside}
+      </div>
       {children}
     </section>
   );

@@ -9,8 +9,11 @@ const OPEN_BY_DEFAULT_FILES = 3;
 /** Longer file diffs start closed, even on a small patch. */
 const LONG_FILE_LINES = 400;
 
-/** A run's changed files with their diffs, and the git commands to review, merge and push the branch. */
-export function Changes({ run, job, wholeBranch = false }: { run: Run; job: Job | null; wholeBranch?: boolean }) {
+/**
+ * A run's changed files with their diffs, and the git commands to review the branch (and merge it by
+ * hand, unless the item is already released or merged).
+ */
+export function Changes({ run, job, wholeBranch = false, shipped = false }: { run: Run; job: Job | null; wholeBranch?: boolean; shipped?: boolean }) {
   const followUp = run.followUpOf !== null;
   // On an item's page the whole branch is what gets merged, so it comes first.
   const [sinceBase, setSinceBase] = useState(wholeBranch && followUp);
@@ -72,10 +75,13 @@ export function Changes({ run, job, wholeBranch = false }: { run: Run; job: Job 
           Merged into {baseBranch(job)}.
         </p>
       )}
-      {run.checkStatus && (
+      {run.checkStatus ? (
         <p className={`text-[13px] ${run.checkStatus === "passed" ? "text-green" : "text-red"}`}>
           {run.checkStatus === "passed" ? "Check passed" : "Check failed"}: <span className="font-mono">{job?.checkCommand}</span>
         </p>
+      ) : (
+        job &&
+        !job.checkCommand && <p className="text-[13px] text-amber">No check configured: that the tests pass is the agent's word. Add a check command to the job.</p>
       )}
 
       <ErrorNote error={error} />
@@ -83,23 +89,38 @@ export function Changes({ run, job, wholeBranch = false }: { run: Run; job: Job 
       {changes?.truncated && (
         <p className="text-[13px] text-fog">The diff is too large to show in full. Review the rest with the commands below.</p>
       )}
-      <GitCommands run={run} job={job} />
+      <GitCommands run={run} job={job} shipped={shipped} />
     </section>
   );
 }
 
+/** Tests and docs after the code they cover. */
+const SUPPORTING = /(^|\/)(tests?|__tests__|docs?)\/|\.(test|spec)\.[^/]+$|\.md$/i;
+
 function FileList({ changes }: { changes: RunChanges }) {
   const patches = splitPatch(changes.patch);
+  // Paired before sorting: patches follow git's order.
+  const files = changes.files
+    .map((file, index) => ({ file, patch: patches[index] ?? "", index }))
+    .sort((a, b) => Number(SUPPORTING.test(a.file.path)) - Number(SUPPORTING.test(b.file.path)) || a.index - b.index);
   const wide = typeof window !== "undefined" && window.matchMedia?.("(min-width: 640px)").matches;
   const small = changes.patch.length < OPEN_BY_DEFAULT_BYTES;
+  const [expanded, setExpanded] = useState<boolean | null>(null);
   return (
-    <ul className="grid gap-2">
-      {changes.files.map((file, index) => {
-        const patch = patches[index] ?? "";
-        const open = Boolean(wide) && small && index < OPEN_BY_DEFAULT_FILES && patch.split("\n").length < LONG_FILE_LINES;
-        return <FileDiff key={`${file.path}-${index}`} file={file} patch={patch} defaultOpen={open} />;
-      })}
-    </ul>
+    <div className="grid gap-2">
+      {files.length > 1 && (
+        <button type="button" className="justify-self-end text-[12px] font-semibold text-fog hover:text-bone" onClick={() => setExpanded((e) => !e)}>
+          {expanded ? "Collapse all" : "Expand all"}
+        </button>
+      )}
+      <ul className="grid gap-2">
+        {files.map(({ file, patch, index }, position) => {
+          const open = expanded ?? (Boolean(wide) && small && position < OPEN_BY_DEFAULT_FILES && patch.split("\n").length < LONG_FILE_LINES);
+          // Expand all and Collapse all remount the rows with that state; a row can still be toggled after.
+          return <FileDiff key={`${file.path}-${index}-${String(expanded)}`} file={file} patch={patch} defaultOpen={open} />;
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -121,8 +142,9 @@ function FileDiff({ file, patch, defaultOpen }: { file: ChangedFile; patch: stri
           {file.status}
         </span>
         <span className="sr-only">{STATUS_LABELS[file.status] ?? file.status}:</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-bone" title={file.path}>
-          {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+        {/* Cut from the left, so the file name stays readable on a phone. */}
+        <span className="min-w-0 flex-1 truncate text-left font-mono text-[12.5px] text-bone [direction:rtl]" title={file.path}>
+          <bdi>{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</bdi>
         </span>
         <span className="shrink-0 font-mono text-[12px] tabular-nums">
           {file.additions === null ? (
@@ -170,7 +192,7 @@ function baseBranch(job: Job | null): string {
   return job ? job.baseRef.replace(/^origin\//, "") : "the base branch";
 }
 
-function GitCommands({ run, job }: { run: Run; job: Job | null }) {
+function GitCommands({ run, job, shipped }: { run: Run; job: Job | null; shipped: boolean }) {
   if (!run.branch || !job) return null;
   const repo = quote(job.repoPath);
   const base = baseBranch(job);
@@ -180,6 +202,7 @@ function GitCommands({ run, job }: { run: Run; job: Job | null }) {
     { label: "Merge", value: `git -C ${repo} switch ${base} && git -C ${repo} merge --no-ff ${run.branch}` },
     { label: "Push (deploys where pushing deploys)", value: `git -C ${repo} push origin ${base}` },
   ];
+  if (shipped) rows.splice(2);
   if (run.pushedTo) rows.splice(1, 0, { label: "Fetch on another machine", value: `git fetch ${run.pushedTo} ${run.branch}` });
   return (
     <details className="group rounded-[12px] border border-steel/30">
@@ -199,7 +222,9 @@ function GitCommands({ run, job }: { run: Run; job: Job | null }) {
           </div>
         ))}
         <p className="bg-inkwell/40 px-4 py-2.5 text-[12px] text-fog">
-          pi-jobs never merges or pushes. Merge, run the app's checks, then push yourself.
+          {shipped
+            ? "This item is already out. These commands are for looking back at the branch."
+            : "Approve & release merges and releases it for you. To do it by hand instead: merge, run the app's checks, then push."}
         </p>
       </div>
     </details>

@@ -21,16 +21,20 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
               className={`grid items-center gap-x-4 gap-y-1.5 px-4 py-3 transition-colors duration-150 hover:bg-inkwell/70 ${
                 compact
                   ? "grid-cols-[104px_minmax(0,1fr)_auto]"
-                  : "sm:grid-cols-[110px_minmax(0,1.4fr)_minmax(0,1fr)_auto] sm:px-5"
+                  : "sm:grid-cols-[136px_minmax(0,1.4fr)_minmax(0,1fr)_auto] sm:px-5"
               }`}
             >
-              <StatusPill status={run.status} />
+              <span className="justify-self-start">
+                <StatusPill status={run.status} />
+              </span>
               <div className="min-w-0">
                 <div className="truncate text-[14px] font-semibold">
                   <span className="font-mono text-fog">#{run.id}</span>{" "}
-                  {jobNames ? (jobNames.get(run.jobId) ?? "Deleted job") : (headline ?? TRIGGER_LABELS[run.trigger])}
+                  {/* What the run was about leads; the job's name follows below. */}
+                  {headline ?? (jobNames ? (jobNames.get(run.jobId) ?? "Deleted job") : TRIGGER_LABELS[run.trigger])}
                 </div>
                 <div className="truncate text-[12px] text-fog">
+                  {jobNames && headline && `${jobNames.get(run.jobId) ?? "Deleted job"} · `}
                   {!titledByTrigger && `${TRIGGER_LABELS[run.trigger]} · `}
                   {agentLabel(run.agent)} · {relativeTime(run.createdAt, now)}
                   {run.followUpOf !== null && ` · ${run.mode === "ask" ? "question" : run.mode === "ship" ? "ship" : run.mode === "release" ? "release" : "follow-up"} after #${run.followUpOf}`}
@@ -52,7 +56,7 @@ export function RunList({ runs, jobNames, compact = false }: { runs: Run[]; jobN
                 ) : run.status === "succeeded" ? (
                   "No changes"
                 ) : (
-                  (run.error ?? (jobNames && headline ? <span className="font-sans text-bone/85">{headline}</span> : ""))
+                  (run.error ?? "")
                 )}
               </div>
               <div className="text-[12px] text-fog tabular-nums sm:text-right">

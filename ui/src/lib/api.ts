@@ -4,6 +4,25 @@ export type AgentId = string;
 export type Verdict = "implemented" | "fixed" | "needs_decision" | "cant_reproduce" | "duplicate" | "not_actionable" | "unknown";
 export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "released" | "merged" | "closed";
 
+/** What a release would release: the item's head against the base branch on origin, and how the job releases. */
+export interface ReleasePreview {
+  head: string;
+  headLabel: string;
+  base: string;
+  ahead: number;
+  behind: number;
+  conflicts: boolean;
+  files: number;
+  additions: number;
+  deletions: number;
+  checkCommand: string | null;
+  checkStatus: "passed" | "failed" | null;
+  kind: "agent" | "script";
+  agent: string | null;
+  instructions: string;
+  verifyCommand: string | null;
+}
+
 /** An item as the server sends it: its runs (oldest first) and what it needs next. */
 export interface ItemData {
   id: number;
@@ -58,6 +77,8 @@ export interface Run {
   itemId: number;
   /** The agent session the item's runs continue; null for agents without sessions. */
   sessionId: string | null;
+  /** Who started or approved it: an API token's name, or "autoRelease". */
+  requestedBy?: string | null;
   /** The agent's final report (Markdown). Only single-run responses carry it; lists have summaryHeadline. */
   summary?: string | null;
   /** The report's first line as plain text. */
@@ -104,6 +125,8 @@ export interface Job {
   shipCommand: string | null;
   /** What the agent follows to release an item's result; null when it doesn't. */
   releaseInstructions: string | null;
+  /** Run after a release; it must exit 0. */
+  verifyCommand: string | null;
   /** Release each result that succeeds with changes, without waiting for the owner. */
   autoRelease: boolean;
   enabled: boolean;
@@ -135,6 +158,7 @@ export interface JobDraft {
   approveRuns: boolean;
   shipCommand: string;
   releaseInstructions: string;
+  verifyCommand: string;
   autoRelease: boolean;
   enabled: boolean;
 }
@@ -218,6 +242,10 @@ export interface Settings {
   defaultAgent: AgentId;
   agents: Record<AgentId, { command: string }>;
   maxConcurrent: number;
+  /** Run on events that need the owner, with PI_JOBS_EVENT, _TITLE, _MESSAGE and _URL set. */
+  notifyCommand: string | null;
+  /** Where the UI is opened, for links in notifications. */
+  publicUrl: string | null;
   /** Every agent in `agents`, in order: built-ins first. */
   agentInfo: { id: AgentId; label: string; builtin: boolean; preset: string | null; executable: string | null; sessions: boolean }[];
 }
@@ -299,6 +327,8 @@ export const api = {
   job: (id: number) => request<Job>("GET", `/api/jobs/${id}`),
   createJob: (draft: JobDraft) => request<Job>("POST", "/api/jobs", draft),
   updateJob: (id: number, draft: JobDraft) => request<Job>("PUT", `/api/jobs/${id}`, draft),
+  /** Changes only the given fields. */
+  patchJob: (id: number, changes: Partial<JobDraft>) => request<Job>("PATCH", `/api/jobs/${id}`, changes),
   deleteJob: (id: number) => request<{ ok: true }>("DELETE", `/api/jobs/${id}`),
   runJob: (id: number) => request<Run>("POST", `/api/jobs/${id}/run`),
   checkWatch: (id: number) => request<WatchResult>("POST", `/api/jobs/${id}/watch`),
@@ -312,7 +342,9 @@ export const api = {
   followUp: (id: number, instructions: string, mode: RunMode = "change") =>
     request<Run>("POST", `/api/runs/${id}/follow-up`, { instructions, mode }),
   /** Releases the run's item: the job's agent by its release instructions, or its release script. */
-  release: (id: number) => request<Run>("POST", `/api/runs/${id}/release`),
+  release: (id: number, expectedHead?: string) => request<Run>("POST", `/api/runs/${id}/release`, expectedHead ? { expectedHead } : {}),
+  /** What releasing the run's item would release, for the confirmation. */
+  releasePreview: (id: number) => request<ReleasePreview>("GET", `/api/runs/${id}/release-preview`),
   /** Every run of the run's item, oldest first, with their reports. */
   thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
   /** Items, newest activity first, optionally one job's or only those waiting on the owner. */
@@ -343,6 +375,8 @@ export const api = {
     request<{ action: ChatAction; secret?: string }>("POST", `/api/chats/${id}/turns/${turnId}/actions/${index}`, { decision }),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
+  /** Sends a test notification with the saved notify command. */
+  testNotification: () => request<{ ok: boolean; error: string | null }>("POST", "/api/settings/notify-test"),
   schedulePreview: (expression: string) =>
     request<SchedulePreview>("GET", `/api/schedule-preview?expression=${encodeURIComponent(expression)}`),
 };
@@ -368,6 +402,7 @@ export function jobToDraft(job: Job): JobDraft {
     approveRuns: job.approveRuns,
     shipCommand: job.shipCommand ?? "",
     releaseInstructions: job.releaseInstructions ?? "",
+    verifyCommand: job.verifyCommand ?? "",
     autoRelease: job.autoRelease,
     enabled: job.enabled,
   };

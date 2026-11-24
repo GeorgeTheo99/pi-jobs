@@ -1,0 +1,14 @@
+{
+  "name": "pi-jobs",
+  "short_name": "pi-jobs",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#0D1B2A",
+  "theme_color": "#1B263B",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

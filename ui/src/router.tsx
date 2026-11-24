@@ -6,7 +6,7 @@ import { InboxPage } from "./pages/InboxPage";
 import { JobPage } from "./pages/JobPage";
 import { JobsPage } from "./pages/JobsPage";
 import { NotFound } from "./pages/NotFound";
-import { RunPage } from "./pages/RunPage";
+import { ItemPage } from "./pages/item/ItemPage";
 import { RunsPage } from "./pages/RunsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
@@ -28,7 +28,7 @@ export const router = createBrowserRouter([
       { path: "/jobs/new", element: <JobPage /> },
       { path: "/jobs/:id", element: <JobPage /> },
       { path: "/runs", element: <RunsPage /> },
-      { path: "/runs/:id", element: <RunPage /> },
+      { path: "/runs/:id", element: <ItemPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <NotFound /> },
     ],
