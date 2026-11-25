@@ -1,5 +1,5 @@
 import { isBuiltinAgent } from "./agents.ts";
-import { itemHeadCommit } from "./items.ts";
+import { itemHeadCommit, promotableStage } from "./items.ts";
 import type { ChatAction, Job, Run, Settings, Store } from "./store.ts";
 
 /**
@@ -43,6 +43,8 @@ const JOB_FIELDS = [
   "shipCommand",
   "releaseInstructions",
   "verifyCommand",
+  "promoteInstructions",
+  "promoteVerifyCommand",
   "autoRelease",
   "enabled",
 ] as const;
@@ -57,6 +59,8 @@ const RISKY_JOB_FIELDS: ReadonlySet<JobField> = new Set([
   "shipCommand",
   "releaseInstructions",
   "verifyCommand",
+  "promoteInstructions",
+  "promoteVerifyCommand",
   "autoRelease",
   "pushBranch",
   "webhookEnabled",
@@ -127,6 +131,8 @@ export function jobBody(job: Job): Record<JobField, unknown> {
     shipCommand: job.shipCommand ?? "",
     releaseInstructions: job.releaseInstructions ?? "",
     verifyCommand: job.verifyCommand ?? "",
+    promoteInstructions: job.promoteInstructions ?? "",
+    promoteVerifyCommand: job.promoteVerifyCommand ?? "",
     autoRelease: job.autoRelease,
     enabled: job.enabled,
   };
@@ -362,6 +368,29 @@ const DEFINITIONS: Record<string, Definition> = {
       return { method: "POST", path: `/api/runs/${run.id}/release`, body: head ? { expectedHead: head } : {} };
     },
     outcome: (response) => ({ text: `Started release run #${(response as Run).id}` }),
+  },
+  promote: {
+    help: `promote {"runId"}: promote an item released to staging (any run of the item) to production: the job's agent follows its promote instructions with the staged commit.`,
+    plan(args, store) {
+      const run = findRun(args, store);
+      const job = store.getJob(run.jobId);
+      if (!job?.promoteInstructions) throw new ActionError("This job has no promote instructions");
+      const staged = promotableStage(store.itemRuns(run.itemId));
+      if (!staged?.headCommit) throw new ActionError("This item has nothing staged to promote");
+      return {
+        title: `Promote ${runLabel(run, store)}'s item to production (${staged.headCommit.slice(0, 12)})`,
+        changes: [{ field: "promoteInstructions", before: null, after: job.promoteInstructions }],
+        risky: true,
+        // Refused once the job or the item changed: a new run, or another staged commit, since the proposal.
+        basis: `${job.updatedAt} ${store.itemRuns(run.itemId).at(-1)!.id} ${staged.headCommit}`,
+      };
+    },
+    request(args, store) {
+      const run = findRun(args, store);
+      const head = promotableStage(store.itemRuns(run.itemId))?.headCommit;
+      return { method: "POST", path: `/api/runs/${run.id}/promote`, body: head ? { expectedHead: head } : {} };
+    },
+    outcome: (response) => ({ text: `Started promotion run #${(response as Run).id}` }),
   },
   close_item: {
     help: `close_item {"runId", "closed": true | false}: close an item without merging, or reopen it.`,

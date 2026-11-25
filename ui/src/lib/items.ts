@@ -24,6 +24,8 @@ export interface Item {
   replied: boolean;
   /** Approve & release can start now. */
   canRelease: boolean;
+  /** Approve & promote can start now. */
+  canPromote: boolean;
 }
 
 export const ITEM_STATE_LABELS: Record<ItemState, string> = {
@@ -31,6 +33,7 @@ export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   running: "Running",
   decision: "Needs your decision",
   review: "Ready to review",
+  staged: "Staged",
   failed: "Failed",
   released: "Released",
   merged: "Merged",
@@ -38,7 +41,7 @@ export const ITEM_STATE_LABELS: Record<ItemState, string> = {
 };
 
 /** Items waiting on the owner: they head the Inbox and count in its badge. */
-export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "failed"];
+export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "staged", "failed"];
 
 export function toItem(data: ItemData): Item {
   const byId = (id: number | null) => (id === null ? null : (data.runs.find((run) => run.id === id) ?? null));
@@ -53,6 +56,7 @@ export function toItem(data: ItemData): Item {
     withChanges: byId(data.withChangesId),
     replied: data.replied,
     canRelease: data.canRelease,
+    canPromote: data.canPromote,
   };
 }
 

@@ -2,7 +2,7 @@
 export type AgentId = string;
 
 export type Verdict = "implemented" | "fixed" | "needs_decision" | "cant_reproduce" | "duplicate" | "not_actionable" | "unknown";
-export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "released" | "merged" | "closed";
+export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "merged" | "closed";
 
 /** What a release would release: the item's head against the base branch on origin, and how the job releases. */
 export interface ReleasePreview {
@@ -21,6 +21,23 @@ export interface ReleasePreview {
   agent: string | null;
   instructions: string;
   verifyCommand: string | null;
+  /** The release goes to staging; the item is promoted afterwards. */
+  staging: boolean;
+}
+
+/** What promoting an item would ship: its staged commit, against the base branch on origin. */
+export interface PromotePreview {
+  head: string;
+  /** The staging release that left it. */
+  stagedBy: number;
+  base: string;
+  /** Commits on the base branch the staged commit lacks: then it isn't a fast-forward. */
+  behind: number;
+  /** Why another item's staging release since rules this promotion out, or null. */
+  replaced: string | null;
+  agent: string;
+  instructions: string;
+  verifyCommand: string | null;
 }
 
 /** An item as the server sends it: its runs (oldest first) and what it needs next. */
@@ -34,6 +51,7 @@ export interface ItemData {
   withChangesId: number | null;
   replied: boolean;
   canRelease: boolean;
+  canPromote: boolean;
 }
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
@@ -75,6 +93,8 @@ export interface Run {
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
   mode: RunMode;
+  /** A release's stage when its job promotes: "staging", or "production" for a promotion. */
+  stage: "staging" | "production" | null;
   /** The first run of this run's item. */
   itemId: number;
   /** The agent session the item's runs continue; null for agents without sessions. */
@@ -132,6 +152,10 @@ export interface Job {
   releaseInstructions: string | null;
   /** Run after a release; it must exit 0. */
   verifyCommand: string | null;
+  /** What the agent follows to promote a staged item to production; null when releases go all the way. */
+  promoteInstructions: string | null;
+  /** Run after a promotion; it must exit 0. */
+  promoteVerifyCommand: string | null;
   /** Release each result that succeeds with changes, without waiting for the owner. */
   autoRelease: boolean;
   enabled: boolean;
@@ -166,6 +190,8 @@ export interface JobDraft {
   shipCommand: string;
   releaseInstructions: string;
   verifyCommand: string;
+  promoteInstructions: string;
+  promoteVerifyCommand: string;
   autoRelease: boolean;
   enabled: boolean;
 }
@@ -352,6 +378,10 @@ export const api = {
   release: (id: number, expectedHead?: string) => request<Run>("POST", `/api/runs/${id}/release`, expectedHead ? { expectedHead } : {}),
   /** What releasing the run's item would release, for the confirmation. */
   releasePreview: (id: number) => request<ReleasePreview>("GET", `/api/runs/${id}/release-preview`),
+  /** Promotes the run's item: the job's agent ships its staged commit by the promote instructions. */
+  promote: (id: number, expectedHead: string) => request<Run>("POST", `/api/runs/${id}/promote`, { expectedHead }),
+  /** What promoting the run's item would ship, for the confirmation. */
+  promotePreview: (id: number) => request<PromotePreview>("GET", `/api/runs/${id}/promote-preview`),
   /** Every run of the run's item, oldest first, with their reports. */
   thread: (id: number) => request<Run[]>("GET", `/api/runs/${id}/thread`),
   /** Items, newest activity first, optionally one job's or only those waiting on the owner. */
@@ -412,6 +442,8 @@ export function jobToDraft(job: Job): JobDraft {
     shipCommand: job.shipCommand ?? "",
     releaseInstructions: job.releaseInstructions ?? "",
     verifyCommand: job.verifyCommand ?? "",
+    promoteInstructions: job.promoteInstructions ?? "",
+    promoteVerifyCommand: job.promoteVerifyCommand ?? "",
     autoRelease: job.autoRelease,
     enabled: job.enabled,
   };

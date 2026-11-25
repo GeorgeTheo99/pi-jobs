@@ -191,6 +191,34 @@ after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_R
   with your credentials. Review **Changes** before releasing, especially changes to release
   tooling. Write release scripts to fail closed and safe to run again.
 
+#### Staging, then production
+
+A job with **promote instructions** releases in two stages, with you between them. Its release
+instructions (or script) then release to staging only, and the item waits in the Inbox as
+**Staged**. **Approve & promote** on its page runs the job's agent with the promote instructions on
+exactly the commit the staging release left (`PI_JOBS_RELEASE_COMMIT`), and an optional **promote
+verify command** must pass after it. Write the release instructions for staging alone: deploy there,
+verify, stop.
+
+- **The staging release** is told not to touch the base branch or production, and to rebase onto a
+  moved base so the result can go out as a fast-forward. It is checked by its report (`Not released`
+  fails it) and the verify command, not against the base branch. **Release automatically** stops
+  here: a promotion is always yours to start.
+- **The promotion** is told to ship that commit as is: no rebase, merge or new commits, and to stop
+  with "Not released" when the base branch has moved past it (it can't start then). It succeeds only
+  if it added no commits, that very commit is on `origin/<base>` after a fetch (a rebased copy
+  doesn't count), and the promote verify command passes. Like a release, it is never retried; **Promote again** tries once more.
+- **One staging.** Another item's staging release replaces what was there, so the item it replaced
+  can't be promoted until it is released to staging again (**Release to staging again**). New work
+  on an item needs a new staging release too.
+- **Verify commands get the commit**: both get `PI_JOBS_RELEASE_COMMIT` (and the other release
+  variables), so a health check can compare the revision a server reports.
+
+`POST /api/runs/<id>/promote` with `{"expectedHead": "<staged commit>"}` (409 when it changed, was
+replaced on staging, or `origin/<base>` moved past it) and `GET /api/runs/<id>/promote-preview` (the commit, the staging run, whether
+`origin/<base>` moved past it, and what ruled it out). Items carry `canPromote`, and release runs a
+`stage` (`staging` or `production`; null for one-stage releases).
+
 ### Chat
 
 **Chat** manages pi-jobs by asking, from any browser: "set up a nightly job that checks
@@ -205,12 +233,12 @@ item starts one with that context.
   happens until you **Apply** it.
 - **Cards are API calls.** Applying a card makes the same request as the matching button, with the
   same validation: create, change, pause or delete a job, Run now, check a watch, Ask or Make
-  changes on an item, approve, dismiss, cancel, release, close or mark replied, change Settings
+  changes on an item, approve, dismiss, cancel, release, promote, close or mark replied, change Settings
   (agent commands and added agents too), create or revoke an API token, replace a webhook token. A card says what
   it does and shows the exact old and new value of every field it changes. If its job or the
   settings changed since it was proposed, applying it fails and asks for a fresh proposal.
-- **Review carefully.** Cards that set commands (check, watch, release, verify, notify, agent), release instructions or
-  automatic release, push branches, turn on a webhook, move a job to another repository, release,
+- **Review carefully.** Cards that set commands (check, watch, release, verify, notify, agent), release or promote instructions or
+  automatic release, push branches, turn on a webhook, move a job to another repository, release, promote,
   delete, or touch tokens are marked and are
   never part of **Apply all**. Instructions, payloads, reports and logs that the agent reads were
   written by others, so read these cards in full before applying them.
@@ -234,7 +262,8 @@ The home page groups runs into **items**: a run started by a trigger, with its r
 and releases (a support report's triage, your questions about it, the run that implements it and
 its release are one item). **Waiting for you** holds failures (a release that didn't finish first),
 runs to approve (**Start**, or **Start all** and **Dismiss all**), proposals that need your decision
-(**Implement it** opens the composer with that instruction filled in) and changes ready to review.
+(**Implement it** opens the composer with that instruction filled in), changes ready to review and
+staged releases to promote.
 Then **In progress** and **Recent** (released, merged, closed). **Check now** checks every watch at
 once (`POST /api/watches/check`). The nav badge and the tab title count what is waiting for you.
 
@@ -276,8 +305,9 @@ curl -X POST http://127.0.0.1:8790/api/hooks/1 \
 
 Settings' **notify command** runs (as you, `/bin/sh -c`, within 30 seconds) when something needs
 you: a run to approve (`approval`), work ready to review (`review`) or to decide on (`decision`), a
-failure no retry will fix (`failed`), a release that went out or failed (`released`,
-`release_failed`), and a watch that started failing (`watch_failed`). Work that releases itself
+staging release to promote (`staged`), a failure no retry will fix (`failed`), a release or
+promotion that went out or failed (`released`, `release_failed`), and a watch that started failing
+(`watch_failed`). Work that releases itself
 announces its release instead of the review. It gets `PI_JOBS_EVENT`, `PI_JOBS_TITLE`,
 `PI_JOBS_MESSAGE`, `PI_JOBS_URL` (built from Settings' **address of this UI**), `PI_JOBS_JOB_ID` and
 `PI_JOBS_RUN_ID`, so any service works:

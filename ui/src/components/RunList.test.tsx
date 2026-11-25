@@ -16,6 +16,7 @@ const base: Run = {
   followUpOf: null,
   instructions: null,
   mode: "change",
+  stage: null,
   itemId: 7,
   sessionId: null,
   repliedAt: null,

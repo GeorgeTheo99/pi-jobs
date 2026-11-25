@@ -1,4 +1,4 @@
-import { MessagesSquare, Rocket, Square } from "lucide-react";
+import { ArrowUpCircle, MessagesSquare, Rocket, Square } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Changes } from "@/components/Changes";
@@ -12,6 +12,7 @@ import { usePoll, useRefreshOnChange } from "@/lib/usePoll";
 import { Approval } from "./Approval";
 import { Composer } from "./Composer";
 import { Turn } from "./Conversation";
+import { PromoteBox } from "./PromoteBox";
 import { ReleaseBox } from "./ReleaseBox";
 import { Reply } from "./Reply";
 import { LogView, RunDetails } from "./RunDetails";
@@ -87,6 +88,12 @@ export function ItemPage() {
                 {activeRun.status === "queued" ? "Cancel" : "Stop"}
               </button>
             )}
+            {item.canPromote && (
+              <a href="#promote" className="btn btn-ghost">
+                <ArrowUpCircle aria-hidden className="size-3.5" />
+                Promote…
+              </a>
+            )}
             {item.canRelease && (
               <a href="#release" className="btn btn-ghost">
                 <Rocket aria-hidden className="size-3.5" />
@@ -147,6 +154,8 @@ export function ItemPage() {
       {item.withChanges && itemFinished && (
         <Changes key={`changes-${item.withChanges.id}`} run={item.withChanges} job={job} wholeBranch shipped={item.state === "released" || item.state === "merged"} />
       )}
+
+      {item.canPromote && <PromoteBox key={`promote-${item.latest.id}`} item={item} onPromoted={() => void poll.refresh()} />}
 
       {item.canRelease && job && <ReleaseBox key={`release-${item.latest.id}`} item={item} job={job} onReleased={() => void poll.refresh()} />}
 

@@ -19,6 +19,7 @@ const preview: ReleasePreview = {
   agent: "pi-claude",
   instructions: "Release it the way AGENTS.md says.",
   verifyCommand: "curl -f localhost",
+  staging: false,
 };
 
 const release = vi.fn(async () => ({}) as Run);

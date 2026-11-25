@@ -236,6 +236,10 @@ test("release instructions and release scripts exclude each other; autoRelease n
   assert.match(unchecked.json.fields.autoRelease, /Add a check command first/);
   const verifyAlone = await app.call("POST", "/api/jobs", { ...base, verifyCommand: "true" });
   assert.match(verifyAlone.json.fields.verifyCommand, /release instructions or a release script first/);
+  const promoteAlone = await app.call("POST", "/api/jobs", { ...base, promoteInstructions: "Promote it", promoteVerifyCommand: "true" });
+  assert.match(promoteAlone.json.fields.promoteInstructions, /release instructions or a release script first/);
+  const promoteVerifyAlone = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Stage it", promoteVerifyCommand: "true" });
+  assert.match(promoteVerifyAlone.json.fields.promoteVerifyCommand, /Add promote instructions first/);
   const job = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true, checkCommand: "true", verifyCommand: "curl -f localhost" });
   assert.equal(job.status, 201, JSON.stringify(job.json));
   assert.deepEqual([job.json.releaseInstructions, job.json.autoRelease, job.json.verifyCommand], ["Release it", true, "curl -f localhost"]);
@@ -567,6 +571,32 @@ test("items, release previews and pinned releases through the API; who started a
   const after = (await app.call("GET", `/api/runs/${run.id}/item`)).json;
   assert.equal(after.state, "released");
   assert.equal((await app.call("GET", "/api/items?waiting=1")).json.length, 0);
+});
+
+test("promotions through the API: a staged item waits for the owner, who promotes the staged commit they reviewed", async (t) => {
+  const app = await startApp(t);
+  app.useFakeAgent("commit");
+  const job = (await app.call("POST", "/api/jobs", { name: "Fixes", repoPath: app.repo, prompt: "go", shipCommand: "true", promoteInstructions: "Promote it" })).json;
+  const run = await waitForFinish(app.runner, (await app.call("POST", `/api/jobs/${job.id}/run`, {})).json.id);
+  assert.equal((await app.call("GET", `/api/runs/${run.id}/promote-preview`)).status, 404, "nothing is staged yet");
+  assert.equal((await app.call("POST", `/api/runs/${run.id}/promote`, {})).status, 409);
+
+  const staging = (await app.call("POST", `/api/runs/${run.id}/release`, { expectedHead: run.headCommit })).json;
+  assert.deepEqual([staging.mode, staging.stage], ["ship", "staging"]);
+  await waitForFinish(app.runner, staging.id);
+  const item = (await app.call("GET", `/api/runs/${run.id}/item`)).json;
+  assert.deepEqual([item.state, item.canPromote, item.canRelease], ["staged", true, true]);
+  assert.equal((await app.call("GET", "/api/items?waiting=1")).json.length, 1, "a staged item waits on the owner");
+
+  const preview = (await app.call("GET", `/api/runs/${run.id}/promote-preview`)).json;
+  assert.deepEqual([preview.head, preview.stagedBy, preview.replaced, preview.instructions], [run.headCommit, staging.id, null, "Promote it"]);
+  const moved = await app.call("POST", `/api/runs/${run.id}/promote`, { expectedHead: "0".repeat(40) });
+  assert.equal(moved.status, 409);
+  assert.match(moved.json.error, /not the one you reviewed/);
+  const promotion = await app.call("POST", `/api/runs/${run.id}/promote`, { expectedHead: preview.head });
+  assert.equal(promotion.status, 200, JSON.stringify(promotion.json));
+  assert.deepEqual([promotion.json.mode, promotion.json.stage, promotion.json.instructions, promotion.json.requestedBy], ["release", "production", "Promote it", "test"]);
+  await waitForFinish(app.runner, promotion.json.id);
 });
 
 test("notification settings: older clients keep them; the test needs a saved command", async (t) => {

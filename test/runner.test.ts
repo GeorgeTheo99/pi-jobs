@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { itemView, runView } from "../src/items.ts";
 import { ReleaseRefusedError } from "../src/runner.ts";
 import type { Run } from "../src/store.ts";
 import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
@@ -1056,6 +1057,110 @@ test("a release that rebased onto a moved base counts as released, by patch", as
   assert.equal(released.status, "succeeded", `${released.error} ${readFileSync(ctx.runner.logPath(released.id), "utf8")}`);
   assert.notEqual(git(remote, "rev-parse", "main"), changed.headCommit, "the pushed commit is a rebased copy");
   assert.equal(released.commits, 0);
+});
+
+test("a job that promotes releases to staging; the owner promotes exactly the staged commit, and only while it is on staging", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const remote = path.join(ctx.root, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  git(ctx.repo, "remote", "add", "origin", remote);
+  git(ctx.repo, "push", "-q", "origin", "main");
+  const record = path.join(ctx.root, "release.json");
+  const input = (overrides = {}) =>
+    ctx.jobInput({
+      releaseInstructions: "Deploy it to staging.",
+      // Verify commands get what was released: staging and main must run exactly that commit.
+      verifyCommand: `test "$(git --git-dir=${remote} rev-parse staging)" = "$PI_JOBS_RELEASE_COMMIT"`,
+      promoteInstructions: "Push the staged commit to main.",
+      promoteVerifyCommand: `test "$(git --git-dir=${remote} rev-parse main)" = "$PI_JOBS_RELEASE_COMMIT"`,
+      ...overrides,
+    });
+  const job = ctx.store.createJob(input(), null);
+  const item = (run: Run) => itemView(ctx.store.itemRuns(run.itemId).map((r) => runView(r, false)), ctx.store.getJob(job.id));
+  const change = async () => {
+    ctx.useFakeAgent("commit");
+    const started = ctx.runner.trigger(job, "manual");
+    assert.ok("run" in started);
+    return waitForFinish(ctx.runner, started.run.id);
+  };
+  const mainBefore = git(remote, "rev-parse", "main");
+
+  const a = await change();
+  await assert.rejects(ctx.runner.promote(a), /Only an item released to staging can be promoted/);
+  ctx.useFakeAgent(`stage:${record}`);
+  const stagedA = await waitForFinish(ctx.runner, (await ctx.runner.release(a)).id);
+  assert.equal(stagedA.stage, "staging");
+  assert.equal(stagedA.status, "succeeded", `${stagedA.error} ${readFileSync(ctx.runner.logPath(stagedA.id), "utf8")}`);
+  assert.equal(git(remote, "rev-parse", "staging"), stagedA.headCommit);
+  assert.equal(git(remote, "rev-parse", "main"), mainBefore, "staging doesn't touch main");
+  assert.match((JSON.parse(readFileSync(record, "utf8")) as { prompt: string }).prompt, /This run releases the item to staging, the first of two stages/);
+  assert.deepEqual([item(a).state, item(a).canPromote, item(a).canRelease], ["staged", true, true]);
+
+  // Another item's staging release replaces A on staging: A can't be promoted until it is staged again.
+  const b = await change();
+  ctx.useFakeAgent(`stage:${record}`);
+  await waitForFinish(ctx.runner, (await ctx.runner.release(b)).id);
+  await assert.rejects(ctx.runner.promote(a), /Staging has since had run #\d+ of item #\d+: release this item to staging again/);
+  assert.match((await ctx.runner.promotePreview(a))?.replaced ?? "", /Staging has since had/);
+  const restaged = await waitForFinish(ctx.runner, (await ctx.runner.release(a)).id);
+  assert.equal(restaged.status, "succeeded");
+  assert.equal((await ctx.runner.promotePreview(a))?.replaced, null);
+  await assert.rejects(ctx.runner.promote(a, { expectedHead: "0".repeat(40) }), /not the one you reviewed/);
+
+  // A promotion that exits 0 without putting the staged commit on main didn't promote.
+  ctx.useFakeAgent("noop");
+  const unpushed = await waitForFinish(ctx.runner, (await ctx.runner.promote(a, { expectedHead: restaged.headCommit! })).id);
+  assert.deepEqual([unpushed.mode, unpushed.stage, unpushed.status], ["release", "production", "failed"]);
+  assert.equal(unpushed.error, "The item's result isn't on origin/main, so it wasn't released");
+  assert.deepEqual([item(a).state, item(a).canPromote], ["failed", true], "a failed promotion can be tried again");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ctx.store.itemRuns(a.itemId).at(-1)!.id, unpushed.id, "a failed promotion is not retried");
+
+  // Nor did one that shipped commits staging never saw.
+  ctx.useFakeAgent(`release:${record}`);
+  const bumped = await waitForFinish(ctx.runner, (await ctx.runner.promote(a)).id);
+  assert.equal(bumped.status, "failed");
+  assert.equal(bumped.error, "The promotion added commits that staging didn't verify");
+  git(remote, "update-ref", "refs/heads/main", mainBefore);
+
+  ctx.useFakeAgent(`promote:${record}`);
+  const promoted = await waitForFinish(ctx.runner, (await ctx.runner.promote(a)).id);
+  assert.equal(promoted.status, "succeeded", `${promoted.error} ${readFileSync(ctx.runner.logPath(promoted.id), "utf8")}`);
+  assert.equal(git(remote, "rev-parse", "main"), restaged.headCommit, "main runs exactly the staged commit");
+  const seen = JSON.parse(readFileSync(record, "utf8")) as { prompt: string; commit: string };
+  assert.equal(seen.commit, restaged.headCommit);
+  assert.ok(seen.prompt.startsWith("Push the staged commit to main."));
+  assert.match(seen.prompt, /This run promotes exactly that commit to production\. .*Do not rebase, merge, amend or add commits/);
+  assert.deepEqual([item(a).state, item(a).canPromote, item(a).canRelease], ["released", false, false]);
+  await assert.rejects(ctx.runner.release(a), /already released/);
+
+  // A staged commit the base branch has moved past can't go out as a fast-forward.
+  ctx.useFakeAgent("edit");
+  const startedC = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in startedC);
+  const c = await waitForFinish(ctx.runner, startedC.run.id);
+  ctx.useFakeAgent(`stage:${record}`);
+  await waitForFinish(ctx.runner, (await ctx.runner.release(c)).id);
+  const other = path.join(ctx.root, "other");
+  execFileSync("git", ["clone", "-q", remote, other]);
+  writeFileSync(path.join(other, "other.txt"), "theirs\n");
+  git(other, "add", "other.txt");
+  git(other, "-c", "user.name=o", "-c", "user.email=o@example.com", "commit", "-qm", "theirs");
+  git(other, "push", "-q", "origin", "main");
+  assert.equal((await ctx.runner.promotePreview(c))?.behind, 1, "someone pushed to main since");
+  await assert.rejects(ctx.runner.promote(c), /origin\/main has moved past the staged commit: release this item to staging again/);
+
+  // Automatic releases stop at staging.
+  ctx.store.updateJob(job.id, input({ autoRelease: true, checkCommand: "true" }), null);
+  ctx.useFakeAgent("implemented");
+  const fix = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in fix);
+  await waitForFinish(ctx.runner, fix.run.id);
+  await waitFor(() => ctx.store.itemRuns(fix.run.itemId).length === 2);
+  const auto = ctx.store.itemRuns(fix.run.itemId)[1]!;
+  assert.deepEqual([auto.mode, auto.stage], ["release", "staging"]);
+  await waitForFinish(ctx.runner, auto.id);
 });
 
 test("a run whose agent was removed from Settings fails without retries", async (t) => {

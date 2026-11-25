@@ -51,7 +51,7 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
   else if (command && command.length > 4000) fields.command = "Keep the command under 4,000 characters";
   if (isCommand) {
     // These belong to agent runs: a command job has no checkout to check, branch to push or result to release.
-    const agentOnly = ["checkCommand", "watchCommand", "shipCommand", "releaseInstructions", "verifyCommand"] as const;
+    const agentOnly = ["checkCommand", "watchCommand", "shipCommand", "releaseInstructions", "verifyCommand", "promoteInstructions", "promoteVerifyCommand"] as const;
     for (const key of agentOnly) if (text(key)) fields[key] = "Command jobs don't use this";
     if (body.pushBranch === true) fields.pushBranch = "Command jobs don't use this";
     if (body.autoRelease === true) fields.autoRelease = "Command jobs don't use this";
@@ -90,6 +90,16 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
   if (verifyCommand && verifyCommand.length > 4000) fields.verifyCommand = "Keep the verify command under 4,000 characters";
   if (verifyCommand && !releaseInstructions && !shipCommand) fields.verifyCommand = "Add release instructions or a release script first";
 
+  const promoteInstructions = text("promoteInstructions") || null;
+  if (promoteInstructions && promoteInstructions.length > MAX_INSTRUCTIONS) {
+    fields.promoteInstructions = `Keep the promote instructions under ${MAX_INSTRUCTIONS.toLocaleString("en-US")} characters`;
+  } else if (promoteInstructions && !releaseInstructions && !shipCommand) {
+    fields.promoteInstructions = "Add release instructions or a release script first: they release to staging";
+  }
+  const promoteVerifyCommand = text("promoteVerifyCommand") || null;
+  if (promoteVerifyCommand && promoteVerifyCommand.length > 4000) fields.promoteVerifyCommand = "Keep the verify command under 4,000 characters";
+  if (promoteVerifyCommand && !promoteInstructions) fields.promoteVerifyCommand = "Add promote instructions first";
+
   const checkCommand = text("checkCommand") || null;
   const autoRelease = body.autoRelease === true;
   if (autoRelease && !releaseInstructions && !shipCommand) fields.autoRelease = "Add release instructions or a release script first";
@@ -124,6 +134,8 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
     shipCommand,
     releaseInstructions,
     verifyCommand,
+    promoteInstructions,
+    promoteVerifyCommand,
     autoRelease,
     enabled: body.enabled !== false,
   };

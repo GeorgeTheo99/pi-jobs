@@ -49,8 +49,8 @@ export function InboxPage() {
   };
 
   const pick = (states: readonly ItemState[]) => items?.filter((item) => states.includes(item.state)) ?? [];
-  // Failures first (a half-done release most of all), then approvals, decisions and reviews; oldest first within each.
-  const order: ItemState[] = ["failed", "approval", "decision", "review"];
+  // Failures first (a half-done release most of all), then approvals, decisions, reviews and promotions; oldest first within each.
+  const order: ItemState[] = ["failed", "approval", "decision", "review", "staged"];
   const rank = (item: Item) => (item.state === "failed" && isReleaseMode(item.latestWork.mode) ? -1 : order.indexOf(item.state));
   const waiting = [...pick(WAITING_STATES)].sort((a, b) => rank(a) - rank(b) || a.latest.id - b.latest.id);
   const approvals = waiting.filter((item) => item.state === "approval");

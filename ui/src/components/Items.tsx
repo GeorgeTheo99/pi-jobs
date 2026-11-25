@@ -13,6 +13,7 @@ const PILL_CLASSES: Record<ItemState, string> = {
   running: "pill-amber pill-solid",
   decision: "pill-amber",
   review: "pill-green",
+  staged: "pill-green",
   failed: "pill-red",
   released: "pill-violet",
   merged: "pill-violet",
@@ -32,7 +33,9 @@ export function ItemPill({ item }: { item: Item }) {
           <span aria-hidden className="size-1.5 rounded-full bg-current" />
         )}
         {failedRelease
-          ? "Release failed"
+          ? item.latestWork.stage === "production"
+            ? "Promote failed"
+            : "Release failed"
           : item.state === "closed" && item.latestWork.mode === "command" && item.latestWork.status === "succeeded" && item.latestWork.closedAt === null
             ? "Succeeded"
             : ITEM_STATE_LABELS[item.state]}

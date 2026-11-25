@@ -41,6 +41,18 @@ switch (mode) {
     execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
     console.log("Released\nrebased onto main and pushed");
     break;
+  case "stage":
+    // Like a staging release: deploy what is checked out to staging, never main.
+    writeFileSync(pidFile, JSON.stringify({ prompt, commit: process.env.PI_JOBS_RELEASE_COMMIT }));
+    execFileSync("git", ["push", "-q", "-f", "origin", "HEAD:refs/heads/staging"]);
+    console.log("Released\nstaging runs this branch");
+    break;
+  case "promote":
+    // Like a promotion: the staged commit, pushed to main as is.
+    writeFileSync(pidFile, JSON.stringify({ prompt, commit: process.env.PI_JOBS_RELEASE_COMMIT }));
+    execFileSync("git", ["push", "-q", "origin", "HEAD:main"]);
+    console.log("Released\nmain runs the staged commit");
+    break;
   case "implemented":
     writeFileSync("feature.txt", "done\n");
     console.log("Implemented the feature.\nVerdict: implemented on this branch");

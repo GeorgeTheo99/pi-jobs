@@ -50,6 +50,8 @@ export function setup() {
     shipCommand: null,
     releaseInstructions: null,
     verifyCommand: null,
+    promoteInstructions: null,
+    promoteVerifyCommand: null,
     autoRelease: false,
     enabled: true,
     ...overrides,

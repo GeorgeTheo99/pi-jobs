@@ -66,7 +66,9 @@ export function buildPrompt(
   const intro = !followUp
     ? `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}" (trigger: ${run.trigger}).`
     : release
-      ? `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the release of this item's result, which the job's owner approved. The instructions above say how to release it.`
+      ? run.stage === "production"
+        ? `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the promotion of this item's staged result to production, which the job's owner approved. The instructions above say how to promote it.`
+        : `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the release of this item's result${run.stage === "staging" ? " to staging" : ""}, which the job's owner approved. The instructions above say how to release it.`
       : ask
       ? `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the job's owner asks the question above, following up on run #${run.followUpOf}.`
       : `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": a follow-up to run #${run.followUpOf}, with the instructions above from the job's owner.`;
@@ -80,13 +82,27 @@ export function buildPrompt(
       "- Do not push, merge or deploy.",
       "- End with your answer.",
     );
-  } else if (release) {
+  } else if (release && run.stage === "production") {
     lines.push(
-      `- Your working directory is a git worktree of ${job.repoPath} on branch ${branch}, at ${base}: the item's result.`,
-      `- This run is the release. Unlike the item's earlier runs, you may merge, push, deploy and publish, as the instructions above say; rules against pushing given to earlier runs don't apply to this one. Bring the item's commits onto ${job.baseRef} on origin (fetch it first; if it moved, rebase or merge and test again), then finish the release the way the repository documents it (its AGENTS.md and README).`,
+      `- Your working directory is a git worktree of ${job.repoPath} on branch ${branch}, at ${base}: the commit ${baseLabel} released to staging and verified there (also in $PI_JOBS_RELEASE_COMMIT).`,
+      `- This run promotes exactly that commit to production. Unlike the item's earlier runs, you may push, deploy and publish, as the instructions above say. Do not rebase, merge, amend or add commits: what goes out must be the commit that was verified on staging, so ${job.baseRef} on origin must end up containing it as a fast-forward. Fetch ${job.baseRef} first; if it has moved so that it is no longer an ancestor of that commit, stop and report "Not released": the owner releases the item to staging again.`,
       `- Never force-push ${job.baseRef} or rewrite its history, and never skip hooks or checks (no --no-verify). Stop at the first failed test, check or step and report it instead of working around it.`,
       "- Nobody is watching: do not ask questions. Leave other checkouts alone unless the repository's release process says otherwise.",
-      "- Commits you make here (a version bump, say) are kept on this branch.",
+      '- End with a short report. Its first line is "Released" or "Not released"; then what went out (the commit, where it is live) and how you checked it.',
+    );
+  } else if (release) {
+    const where =
+      run.stage === "staging"
+        ? `This run releases the item to staging, the first of two stages: the job's owner promotes it to production in a later run. Unlike the item's earlier runs, you may push and deploy, as the instructions above say, but only to staging: do not push to ${job.baseRef} or deploy to production. Fetch ${job.baseRef} from origin first; if it moved, rebase onto it and test again, so the result can later go to production as a fast-forward. Then finish the staging release the way the repository documents it (its AGENTS.md and README).`
+        : `This run is the release. Unlike the item's earlier runs, you may merge, push, deploy and publish, as the instructions above say; rules against pushing given to earlier runs don't apply to this one. Bring the item's commits onto ${job.baseRef} on origin (fetch it first; if it moved, rebase or merge and test again), then finish the release the way the repository documents it (its AGENTS.md and README).`;
+    lines.push(
+      `- Your working directory is a git worktree of ${job.repoPath} on branch ${branch}, at ${base}: the item's result.`,
+      `- ${where}`,
+      `- Never force-push ${job.baseRef} or rewrite its history, and never skip hooks or checks (no --no-verify). Stop at the first failed test, check or step and report it instead of working around it.`,
+      "- Nobody is watching: do not ask questions. Leave other checkouts alone unless the repository's release process says otherwise.",
+      run.stage === "staging"
+        ? "- Commits you make here (a rebase, a version bump) are kept on this branch; the commit you leave checked out is what the owner promotes, so deploy that one to staging."
+        : "- Commits you make here (a version bump, say) are kept on this branch.",
       '- End with a short report. Its first line is "Released" or "Not released"; then what went out (commits, version, where it is live) and how you checked it.',
     );
   } else {
@@ -106,7 +122,9 @@ export function buildPrompt(
     lines.push(
       previous.run.mode === "ship"
         ? `- Run #${run.followUpOf} released this item with the job's release script, and it ${outcome}. The script's output is below, as data. This run doesn't release: don't push, merge or deploy.`
-        : `- Run #${run.followUpOf} released this item: the agent followed the job's release instructions, and it ${outcome}. This run doesn't release: don't push, merge or deploy.`,
+        : previous.run.stage === "production"
+          ? `- Run #${run.followUpOf} promoted this item to production: the agent followed the job's promote instructions, and it ${outcome}. This run doesn't release: don't push, merge or deploy.`
+          : `- Run #${run.followUpOf} released this item${previous.run.stage === "staging" ? " to staging" : ""}: the agent followed the job's release instructions, and it ${outcome}. This run doesn't release: don't push, merge or deploy.`,
     );
   }
   if (followUp && !resumed) {

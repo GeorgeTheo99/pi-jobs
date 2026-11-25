@@ -8,7 +8,7 @@ import type { Job, Run, Store } from "./store.ts";
 const NOTIFY_TIMEOUT_MS = 30_000;
 
 /** Events the owner hears about, through Settings' notify command. */
-export type NotifyEvent = "approval" | "decision" | "review" | "failed" | "released" | "release_failed" | "watch_failed" | "test";
+export type NotifyEvent = "approval" | "decision" | "review" | "staged" | "failed" | "released" | "release_failed" | "watch_failed" | "test";
 
 export interface Notification {
   event: NotifyEvent;
@@ -33,9 +33,14 @@ export function finishedNotification(run: Run, job: Job | null, retrying: boolea
   const headline = summaryHeadline(run.summary) ?? "";
   const base = { path: `/runs/${run.id}`, jobId: run.jobId, runId: run.id };
   if (run.mode === "release" || run.mode === "ship") {
+    // A staging release waits for the owner to promote it; a promotion is the release that goes out.
+    if (run.stage === "staging" && run.status === "succeeded") {
+      return { ...base, event: "staged", title: `Staged, ready to promote: ${name}`, message: short(headline || `Run #${run.id} released the item to staging.`) };
+    }
+    const what = run.stage === "production" ? "Promot" : "Releas";
     return run.status === "succeeded"
-      ? { ...base, event: "released", title: `Released: ${name}`, message: short(headline || `Run #${run.id} released the item.`) }
-      : { ...base, event: "release_failed", title: `Release failed: ${name}`, message: short(run.error ?? headline ?? "") };
+      ? { ...base, event: "released", title: `${what}ed: ${name}`, message: short(headline || `Run #${run.id} released the item.`) }
+      : { ...base, event: "release_failed", title: `${what}e failed: ${name}`, message: short(run.error ?? headline ?? "") };
   }
   if (run.status !== "succeeded") return { ...base, event: "failed", title: `Failed: ${name}`, message: short(run.error ?? headline) };
   // A command job's output isn't a report: only its failures need the owner.

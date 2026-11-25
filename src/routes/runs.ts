@@ -75,6 +75,15 @@ export function runRoutes(ctx: AppContext): Route[] {
     ],
     [
       "GET",
+      /^\/api\/runs\/(\d+)\/promote-preview$/,
+      async (_req, [id]) => {
+        const preview = await runner.promotePreview(ctx.findRun(id));
+        if (!preview) throw new HttpError(404, "This item has nothing staged to promote");
+        return preview;
+      },
+    ],
+    [
+      "GET",
       /^\/api\/runs\/(\d+)\/item$/,
       async (_req, [id]) => itemOf(ctx.findRun(id)),
     ],
@@ -173,6 +182,19 @@ export function runRoutes(ctx: AppContext): Route[] {
           throw new HttpError(400, "expectedHead must be a full commit id");
         }
         return runner.release(run, { expectedHead: body.expectedHead as string | undefined, requestedBy: ctx.sessions.get(req)?.name });
+      },
+    ],
+    [
+      "POST",
+      /^\/api\/runs\/(\d+)\/promote$/,
+      async (req, [id]) => {
+        const run = ctx.findRun(id);
+        // The staged commit the owner reviewed (optional): promoting refuses if it changed.
+        const body = await readJson(req);
+        if (body.expectedHead !== undefined && (typeof body.expectedHead !== "string" || !/^[0-9a-f]{40}$/.test(body.expectedHead))) {
+          throw new HttpError(400, "expectedHead must be a full commit id");
+        }
+        return runner.promote(run, { expectedHead: body.expectedHead as string | undefined, requestedBy: ctx.sessions.get(req)?.name });
       },
     ],
     [

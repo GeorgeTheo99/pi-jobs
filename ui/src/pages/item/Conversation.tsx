@@ -76,7 +76,8 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
               <Wrench aria-hidden className="size-3.5" />
             )}
             {/* A release may come from the job's Release automatically, not the owner. */}
-            {release ? `Release${releasedBy(run)}` : `You · ${ask ? "Ask" : "Make changes"}`} · {relativeTime(run.createdAt, now)}
+            {release ? `${run.stage === "production" ? "Promotion" : run.stage === "staging" ? "Release to staging" : "Release"}${releasedBy(run)}` : `You · ${ask ? "Ask" : "Make changes"}`} ·{" "}
+            {relativeTime(run.createdAt, now)}
           </div>
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
         </div>
@@ -106,7 +107,7 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
           <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
         ) : run.status === "running" ? (
           <p className="text-[14px] text-fog">
-            {ask ? "Looking into it…" : release ? "Releasing…" : "Working on it…"}{" "}
+            {ask ? "Looking into it…" : release ? (run.stage === "production" ? "Promoting…" : "Releasing…") : "Working on it…"}{" "}
             {!selected && (
               <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
                 Watch the log
@@ -145,7 +146,7 @@ function ScriptReleaseTurn({ run, selected }: { run: Run; selected: boolean }) {
       <div className="turn-you">
         <div className="turn-label">
           <Rocket aria-hidden className="size-3.5" />
-          Release{releasedBy(run)} · {relativeTime(run.createdAt, now)}
+          {run.stage === "staging" ? "Release to staging" : "Release"}{releasedBy(run)} · {relativeTime(run.createdAt, now)}
         </div>
         <p className="font-mono text-[13px] break-all text-bone">{run.instructions}</p>
       </div>

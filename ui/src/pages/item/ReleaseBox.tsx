@@ -1,5 +1,5 @@
 import { AlertTriangle, Rocket, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Disclosure, ErrorNote } from "@/components/ui";
 import { agentLabel, api, isReleaseMode, type Job, type ReleasePreview } from "@/lib/api";
 import type { Item } from "@/lib/items";
@@ -14,7 +14,9 @@ export function ReleaseBox({ item, job, onReleased }: { item: Item; job: Job; on
   const [error, setError] = useState<Error | null>(null);
   const [confirming, setConfirming] = useState(false);
   const again = isReleaseMode(item.latestWork.mode);
-  const primary = item.state === "review" || item.state === "failed";
+  // A failed promotion is tried again from the Promote section.
+  const primary = item.state === "review" || (item.state === "failed" && item.latestWork.stage !== "production");
+  const staging = preview?.staging ?? job.promoteInstructions !== null;
 
   useEffect(() => {
     let stale = false;
@@ -36,8 +38,9 @@ export function ReleaseBox({ item, job, onReleased }: { item: Item; job: Job; on
       {preview && <PreviewFacts preview={preview} />}
       <p className="max-w-[72ch] text-[13px] leading-relaxed text-fog">
         {job.releaseInstructions
-          ? `${agentLabel(preview?.agent ?? job.effectiveAgent)} continues this item's conversation and releases it by the job's release instructions. In that run only it may merge, push, deploy and publish.`
-          : "The job's release script runs on this item's result."}{" "}
+          ? `${agentLabel(preview?.agent ?? job.effectiveAgent)} continues this item's conversation and releases it${staging ? " to staging" : ""} by the job's release instructions. In that run only it may ${staging ? "push and deploy to staging" : "merge, push, deploy and publish"}.`
+          : `The job's release script runs on this item's result${staging ? " to release it to staging" : ""}.`}{" "}
+        {staging ? "Once it is staged, you promote it to production. " : ""}
         {preview?.verifyCommand ? "Then the verify command must pass. " : ""}It isn't retried; a failure comes back here.
       </p>
       <div className="sticky-actions flex justify-end">
@@ -48,19 +51,36 @@ export function ReleaseBox({ item, job, onReleased }: { item: Item; job: Job; on
           onClick={() => setConfirming(true)}
         >
           <Rocket aria-hidden className="size-3.5" />
-          {again ? "Release again…" : "Approve & release…"}
+          {again ? `Release${staging ? " to staging" : ""} again…` : `Approve & release${staging ? " to staging" : ""}…`}
         </button>
       </div>
       {confirming && preview && (
-        <ConfirmRelease
-          preview={preview}
+        <ConfirmDialog
+          title={
+            <>
+              Release <span className="font-mono">{preview.head.slice(0, 12)}</span>
+              {preview.staging ? " to staging" : ""}?
+            </>
+          }
+          warning={
+            preview.conflicts
+              ? "It conflicts with the base branch: the release will have to resolve that."
+              : preview.checkStatus !== "passed"
+                ? "Nothing checked this result: review the changes before releasing."
+                : null
+          }
+          instructionsTitle={preview.kind === "agent" ? `What ${agentLabel(preview.agent ?? "")} is told to do` : "The release script"}
+          instructions={preview.instructions}
+          confirmLabel="Release"
           onCancel={() => setConfirming(false)}
           onConfirm={async () => {
             await api.release(item.latest.id, preview.head);
             setConfirming(false);
             onReleased();
           }}
-        />
+        >
+          <PreviewFacts preview={preview} />
+        </ConfirmDialog>
       )}
     </section>
   );
@@ -93,7 +113,26 @@ function PreviewFacts({ preview }: { preview: ReleasePreview }) {
 }
 
 /** A modal confirmation with what exactly goes out; Escape or Cancel closes it. */
-function ConfirmRelease({ preview, onCancel, onConfirm }: { preview: ReleasePreview; onCancel: () => void; onConfirm: () => Promise<void> }) {
+export function ConfirmDialog({
+  title,
+  children,
+  warning,
+  instructionsTitle,
+  instructions,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: ReactNode;
+  /** What goes out. */
+  children: ReactNode;
+  warning: string | null;
+  instructionsTitle: string;
+  instructions: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -105,7 +144,6 @@ function ConfirmRelease({ preview, onCancel, onConfirm }: { preview: ReleasePrev
     else dialog.setAttribute("open", "");
     return () => (typeof dialog.close === "function" ? dialog.close() : dialog.removeAttribute("open"));
   }, []);
-  const risky = preview.conflicts || preview.checkStatus !== "passed";
   return (
     <dialog
       ref={ref}
@@ -119,23 +157,21 @@ function ConfirmRelease({ preview, onCancel, onConfirm }: { preview: ReleasePrev
       <div className="grid gap-4 p-5">
         <div className="flex items-start justify-between gap-4">
           <h2 id="confirm-release-title" className="text-[17px] font-bold">
-            Release <span className="font-mono">{preview.head.slice(0, 12)}</span>?
+            {title}
           </h2>
           <button type="button" className="icon-btn" aria-label="Cancel" onClick={onCancel}>
             <X className="size-4" />
           </button>
         </div>
-        <PreviewFacts preview={preview} />
-        {risky && (
+        {children}
+        {warning && (
           <p className="flex items-start gap-2 text-[13px] leading-snug text-amber">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-            {preview.conflicts
-              ? "It conflicts with the base branch: the release will have to resolve that."
-              : "Nothing checked this result: review the changes before releasing."}
+            {warning}
           </p>
         )}
-        <Disclosure title={preview.kind === "agent" ? `What ${agentLabel(preview.agent ?? "")} is told to do` : "The release script"}>
-          <pre className="log-view max-h-60 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{preview.instructions}</pre>
+        <Disclosure title={instructionsTitle}>
+          <pre className="log-view max-h-60 overflow-auto px-4 py-3 whitespace-pre-wrap text-bone">{instructions}</pre>
         </Disclosure>
         <p className="text-[12px] leading-snug text-fog">
           It runs as you, with your credentials, and may do things that can't be undone. If the item changes before it starts, it is refused.
@@ -159,7 +195,7 @@ function ConfirmRelease({ preview, onCancel, onConfirm }: { preview: ReleasePrev
             }}
           >
             <Rocket aria-hidden className="size-3.5" />
-            {starting ? "Starting…" : "Release"}
+            {starting ? "Starting…" : confirmLabel}
           </button>
         </div>
       </div>

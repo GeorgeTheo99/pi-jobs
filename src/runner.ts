@@ -8,7 +8,7 @@ import { RepoState } from "./changes.ts";
 import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolvesToCommit } from "./git.ts";
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { agentOutput, buildPrompt, releaseOutcome, type PreviousRun } from "./prompt.ts";
-import { autoReleaseBlocker } from "./items.ts";
+import { autoReleaseBlocker, promotableStage } from "./items.ts";
 import { ACTIVE_STATUSES, INTERRUPTED, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
 import { parseWatchOutput, runWatchCommand, type WatchResult } from "./watch.ts";
 
@@ -172,7 +172,8 @@ export class Runner extends EventEmitter<RunnerEvents> {
     if (!work || (work.status !== "succeeded" && !RELEASE_MODES.includes(work.mode))) {
       throw new ReleaseRefusedError("Only a succeeded result can be released: follow up until a run succeeds");
     }
-    if (RELEASE_MODES.includes(work.mode) && work.status === "succeeded") {
+    // A staged item may go to staging again (another item may have replaced it there).
+    if (RELEASE_MODES.includes(work.mode) && work.status === "succeeded" && work.stage !== "staging") {
       throw new ReleaseRefusedError("This item is already released: make changes first to release something new");
     }
     const latest = runs.at(-1)!;
@@ -190,18 +191,102 @@ export class Runner extends EventEmitter<RunnerEvents> {
       throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
     }
     const how = auto ? "automatically, as the job releases checked, implemented work" : `by ${requestedBy ?? "the owner"}`;
+    // A job that promotes releases to staging; the owner promotes to production afterwards.
+    const stage = job.promoteInstructions ? "staging" : null;
+    const where = stage ? " to staging" : "";
     let run: Run;
     if (job.releaseInstructions) {
       const agent = job.agent ?? this.store.getSettings().defaultAgent;
-      run = this.store.createRelease(latest, agent, job.releaseInstructions, "release");
-      this.note(run.id, `Queued (release of run #${latest.id}'s item ${how}, agent: ${agent})`);
+      run = this.store.createRelease(latest, agent, job.releaseInstructions, "release", stage);
+      this.note(run.id, `Queued (release of run #${latest.id}'s item${where} ${how}, agent: ${agent})`);
     } else {
-      run = this.store.createRelease(latest, latest.agent, job.shipCommand!);
-      this.note(run.id, `Queued (ship of run #${latest.id}'s item ${how}: ${job.shipCommand})`);
+      run = this.store.createRelease(latest, latest.agent, job.shipCommand!, "ship", stage);
+      this.note(run.id, `Queued (ship of run #${latest.id}'s item${where} ${how}: ${job.shipCommand})`);
     }
     this.store.updateRun(run.id, { requestedBy: auto ? "autoRelease" : (requestedBy ?? null) });
     this.pump();
     return this.store.getRun(run.id)!;
+  }
+
+  /**
+   * Queues the promotion of an item's staged commit to production: the job's agent follows its promote
+   * instructions with exactly the commit its staging release left. Only the owner starts it (never
+   * autoRelease); it is refused once another item's staging release has replaced this one on staging,
+   * or the base branch has moved past it (it couldn't go out as a fast-forward).
+   */
+  async promote(of: Run, { expectedHead, requestedBy }: { expectedHead?: string; requestedBy?: string } = {}): Promise<Run> {
+    const job = this.store.getJob(of.jobId);
+    if (!job?.promoteInstructions) throw new ReleaseRefusedError("This job has no promote instructions");
+    const runs = this.store.itemRuns(of.itemId);
+    if (runs.some((run) => ACTIVE_STATUSES.includes(run.status))) throw new ReleaseRefusedError("Wait for the item's runs to finish");
+    const staged = promotableStage(runs);
+    if (!staged?.headCommit) throw new ReleaseRefusedError("Only an item released to staging can be promoted: release it first");
+    if (expectedHead && staged.headCommit !== expectedHead) {
+      throw new ReleaseRefusedError(`The item's staged commit is now ${staged.headCommit.slice(0, 12)}, not the one you reviewed; review it again`);
+    }
+    const replaced = this.stagingReplaced(job, staged);
+    if (replaced) throw new ReleaseRefusedError(replaced);
+    const target = await this.fetchedBase(job);
+    if ((await this.commitsMissing(job, staged.headCommit, target)) > 0) {
+      throw new ReleaseRefusedError(`${target.replace("refs/remotes/", "")} has moved past the staged commit: release this item to staging again`);
+    }
+    // Checked again after the awaits above: another run of the item may have been queued meanwhile.
+    if (promotableStage(this.store.itemRuns(of.itemId))?.id !== staged.id || this.store.itemRuns(of.itemId).some((run) => ACTIVE_STATUSES.includes(run.status))) {
+      throw new ReleaseRefusedError("Wait for the item's runs to finish");
+    }
+    if (this.store.countRuns(job.id, WAITING_STATUSES) >= MAX_QUEUED_PER_JOB) {
+      throw new QueueFullError(`Job already has ${MAX_QUEUED_PER_JOB} runs waiting to start`);
+    }
+    const latest = runs.at(-1)!;
+    const agent = job.agent ?? this.store.getSettings().defaultAgent;
+    const run = this.store.createRelease(latest, agent, job.promoteInstructions, "release", "production");
+    this.note(run.id, `Queued (promotion of ${staged.headCommit.slice(0, 12)}, staged by run #${staged.id}, by ${requestedBy ?? "the owner"}, agent: ${agent})`);
+    this.store.updateRun(run.id, { requestedBy: requestedBy ?? null });
+    this.pump();
+    return this.store.getRun(run.id)!;
+  }
+
+  /**
+   * What promoting an item would ship, for the owner's confirmation: its staged commit, whether the base
+   * branch on origin (after a quick fetch) has moved past it, so it is no longer a fast-forward, and
+   * whether another item has replaced it on staging since. Null when the item has nothing staged.
+   */
+  async promotePreview(of: Run) {
+    const job = this.store.getJob(of.jobId);
+    const staged = promotableStage(this.store.itemRuns(of.itemId));
+    if (!job?.promoteInstructions || !staged?.headCommit) return null;
+    const target = await this.fetchedBase(job);
+    const behind = await this.commitsMissing(job, staged.headCommit, target);
+    return {
+      head: staged.headCommit,
+      stagedBy: staged.id,
+      base: target.replace("refs/remotes/", ""),
+      behind,
+      replaced: this.stagingReplaced(job, staged),
+      agent: job.agent ?? this.store.getSettings().defaultAgent,
+      instructions: job.promoteInstructions,
+      verifyCommand: job.promoteVerifyCommand,
+    };
+  }
+
+  /** Why a staged item can't be promoted because another item's staging release came after it, or null. */
+  private stagingReplaced(job: Job, staged: Run): string | null {
+    const later = this.store.laterStagings(job.id, staged.itemId, staged.id).at(-1);
+    return later ? `Staging has since had run #${later.id} of item #${later.itemId}: release this item to staging again before promoting it` : null;
+  }
+
+  /** How many commits `target` has that `commit` lacks: when any, `commit` isn't a fast-forward of it. */
+  private async commitsMissing(job: Job, commit: string, target: string): Promise<number> {
+    return Number(await git(job.repoPath, ["rev-list", "--count", `${commit}..${target}`]).catch(() => "0"));
+  }
+
+  /** The base branch on origin after a quick fetch, or the job's base ref when it isn't a branch on origin. */
+  private async fetchedBase(job: Job): Promise<string> {
+    if (!(await isFetchableBranch(job.repoPath, job.baseRef))) return job.baseRef;
+    const branch = baseBranch(job.baseRef);
+    const target = `refs/remotes/${REMOTE}/${branch}`;
+    await git(job.repoPath, ["fetch", "--quiet", "--no-tags", REMOTE, `+refs/heads/${branch}:${target}`], 15_000).catch(() => undefined);
+    return target;
   }
 
   /**
@@ -215,12 +300,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
     const runs = this.store.itemRuns(of.itemId);
     const head = await this.itemHead(job, runs.at(-1)!);
     if (!head) return null;
-    let target = job.baseRef;
-    if (await isFetchableBranch(job.repoPath, job.baseRef)) {
-      const branch = baseBranch(job.baseRef);
-      target = `refs/remotes/${REMOTE}/${branch}`;
-      await git(job.repoPath, ["fetch", "--quiet", "--no-tags", REMOTE, `+refs/heads/${branch}:${target}`], 15_000).catch(() => undefined);
-    }
+    const target = await this.fetchedBase(job);
     const count = async (range: string) => Number(await git(job.repoPath, ["rev-list", "--count", range]).catch(() => "0"));
     const behind = await count(`${head.commit}..${target}`);
     const ahead = await count(`${target}..${head.commit}`);
@@ -246,6 +326,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       agent: job.releaseInstructions ? (job.agent ?? this.store.getSettings().defaultAgent) : null,
       instructions: job.releaseInstructions ?? job.shipCommand ?? "",
       verifyCommand: job.verifyCommand,
+      staging: job.promoteInstructions !== null,
     };
   }
 
@@ -445,6 +526,8 @@ export class Runner extends EventEmitter<RunnerEvents> {
       }
       const ask = run.mode === "ask";
       const release = run.mode === "release";
+      const staging = run.stage === "staging";
+      const production = run.stage === "production";
       // Every run of an item works in the same place, so the agent's session (kept per directory) carries over.
       // Freeing it first may commit a kept worktree's leftovers, which the base below then includes.
       const dir = path.join(this.worktreeDir, `job-${job.id}`, `item-${run.itemId}`);
@@ -453,7 +536,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       const command = this.agentCommand(run.agent);
       worktree = dir;
       const previous = run.followUpOf === null ? null : await this.previousRun(run.followUpOf);
-      const head = previous ? await this.itemHead(job, previous.run) : null;
+      const head = production ? await this.stagedHead(job, run) : previous ? await this.itemHead(job, previous.run) : null;
       const base = head ?? (await this.resolveBase(job, run.id));
       baseCommit = base.commit;
       mkdirSync(path.dirname(worktree), { recursive: true });
@@ -513,10 +596,15 @@ export class Runner extends EventEmitter<RunnerEvents> {
       // step): its report mustn't say "Not released", the item's result must be on the base branch on
       // origin, and the job's verify command must pass.
       let releaseError: string | null = null;
+      // A staging release can't be checked against the base branch (it doesn't go there): its report and
+      // verify command decide. A promotion must have put exactly the staged commit on the base branch.
       if (release && exitCode === 0 && !active.stopReason) {
-        releaseError = releaseOutcome(this.readSummary(run.id)) ?? (await this.releasedCheck(job, run.id, baseCommit));
-        if (!releaseError) releaseError = await this.verify(job, run, active, worktree, deadline);
-      } else if (release && active.stopReason === "timed_out" && (await this.releasedCheck(job, run.id, baseCommit)) === null) {
+        releaseError =
+          releaseOutcome(this.readSummary(run.id)) ??
+          (production && headCommit !== baseCommit ? "The promotion added commits that staging didn't verify" : null) ??
+          (staging ? null : await this.releasedCheck(job, run.id, baseCommit, production));
+        if (!releaseError) releaseError = await this.verify(job, run, active, worktree, deadline, releaseEnv(job, run, production ? baseCommit : headCommit, branch));
+      } else if (release && !staging && active.stopReason === "timed_out" && (await this.releasedCheck(job, run.id, baseCommit, production)) === null) {
         // Cut off by its timeout after its result went out: the owner must check before releasing again.
         releaseError = `It timed out, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`;
       }
@@ -544,7 +632,10 @@ export class Runner extends EventEmitter<RunnerEvents> {
         if (commits === 0 && branch) {
           await git(job.repoPath, ["branch", "-D", branch]);
           branch = null;
-          this.note(run.id, release ? `Everything it committed is on ${job.baseRef}; removed the worktree and branch` : "No changes; removed the worktree and branch");
+          this.note(
+            run.id,
+            staging ? "It committed nothing new; removed the worktree and branch" : release ? `Everything it committed is on ${job.baseRef}; removed the worktree and branch` : "No changes; removed the worktree and branch",
+          );
         } else {
           this.note(run.id, `${commits} commit(s) on ${branch}; removed the worktree`);
         }
@@ -569,7 +660,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         retryable,
       );
       if (finished.status === "succeeded" && finished.mode === "change" && (finished.commits ?? 0) > 0) await this.autoRelease(job, finished);
-      if (finished.status === "succeeded" && release) await this.pruneItemBranches(job, finished);
+      if (finished.status === "succeeded" && release && !staging) await this.pruneItemBranches(job, finished);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.note(run.id, `Error: ${message}`);
@@ -613,7 +704,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         this.store.updateRun(run.id, { exitCode });
         this.note(run.id, `Release script exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
       }
-      const verifyError = exitCode === 0 ? await this.verify(job, run, active, dir, deadline) : null;
+      const verifyError = exitCode === 0 ? await this.verify(job, run, active, dir, deadline, releaseEnv(job, run, head.commit, head.branch)) : null;
       await this.removeWorktree(job, dir);
       worktree = null;
       const status: RunStatus = runStatus(active.stopReason, exitCode === 0 && !verifyError);
@@ -675,8 +766,9 @@ export class Runner extends EventEmitter<RunnerEvents> {
   /**
    * Why a release that exited 0 isn't out: the item's result (`commit`) isn't on the job's base branch
    * on origin after a fetch (or locally, for a base that isn't a branch on origin). Null when it is.
+   * `exact` (a promotion) needs that very commit there, not a rebased copy of its changes.
    */
-  private async releasedCheck(job: Job, runId: number, commit: string): Promise<string | null> {
+  private async releasedCheck(job: Job, runId: number, commit: string, exact = false): Promise<string | null> {
     const branch = baseBranch(job.baseRef);
     let target = job.baseRef;
     if (await isFetchableBranch(job.repoPath, job.baseRef)) {
@@ -687,7 +779,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         this.note(runId, `Could not fetch ${branch} to check the release (${(error as Error).message}); using the last fetched tip`);
       }
     }
-    const released = await isReleased(job.repoPath, commit, target);
+    const released = exact ? await isAncestor(job.repoPath, commit, target) : await isReleased(job.repoPath, commit, target);
     this.note(runId, released ? `The item's result is on ${target.replace("refs/remotes/", "")}` : `The item's result (${commit.slice(0, 12)}) is not on ${target.replace("refs/remotes/", "")}`);
     return released ? null : `The item's result isn't on ${target.replace("refs/remotes/", "")}, so it wasn't released`;
   }
@@ -699,8 +791,9 @@ export class Runner extends EventEmitter<RunnerEvents> {
   async recheckInterruptedReleases(since: string): Promise<void> {
     for (const run of this.store.interruptedReleases(since)) {
       const job = this.store.getJob(run.jobId);
-      if (!job || !run.baseCommit) continue;
-      if ((await this.releasedCheck(job, run.id, run.baseCommit)) !== null) continue;
+      // A staging release doesn't go to the base branch, so git can't tell whether it went out.
+      if (!job || !run.baseCommit || run.stage === "staging") continue;
+      if ((await this.releasedCheck(job, run.id, run.baseCommit, run.stage === "production")) !== null) continue;
       this.store.updateRun(run.id, {
         error: `${INTERRUPTED}, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`,
       });
@@ -724,11 +817,15 @@ export class Runner extends EventEmitter<RunnerEvents> {
     if (pruned.length > 0) this.note(release.id, `Deleted released branches: ${pruned.join(", ")}`);
   }
 
-  /** Runs the job's verify command after a release, in its checkout; why it failed, or null. */
-  private async verify(job: Job, run: Run, active: ActiveRun, cwd: string, deadline: number): Promise<string | null> {
-    if (!job.verifyCommand || active.stopReason) return null;
-    this.note(run.id, `Running verify command: ${job.verifyCommand}`);
-    const code = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.verifyCommand], cwd, deadline);
+  /**
+   * Runs the job's verify command after a release (its promote verify command after a promotion), in
+   * its checkout, with what was released in PI_JOBS_RELEASE_*; why it failed, or null.
+   */
+  private async verify(job: Job, run: Run, active: ActiveRun, cwd: string, deadline: number, env: Record<string, string>): Promise<string | null> {
+    const command = run.stage === "production" ? job.promoteVerifyCommand : job.verifyCommand;
+    if (!command || active.stopReason) return null;
+    this.note(run.id, `Running verify command: ${command}`);
+    const code = await this.runProcess(run.id, active, ["/bin/sh", "-c", command], cwd, deadline, env);
     this.note(run.id, `Verify command ${code === 0 ? "passed" : `failed${code === null ? "" : ` (code ${code})`}`}`);
     return code === 0 ? null : `The verify command failed${code === null ? "" : ` with code ${code}`}`;
   }
@@ -768,6 +865,22 @@ export class Runner extends EventEmitter<RunnerEvents> {
     if (!run) return null;
     const output = agentOutput(await readFile(this.logPath(id), "utf8").catch(() => ""));
     return { run, output: output.length > MAX_PREVIOUS_OUTPUT ? `[earlier output omitted]\n${output.slice(-MAX_PREVIOUS_OUTPUT)}` : output };
+  }
+
+  /**
+   * Where a promotion starts: exactly the commit the item's staging release left. Refused when another
+   * item's staging release ran since (it was queued first, say), as that replaced this one on staging.
+   */
+  private async stagedHead(job: Job, run: Run): Promise<{ commit: string; label: string; branch: string | null }> {
+    if (!job.promoteInstructions) throw new Error("The job no longer promotes: release the item again");
+    const staged = promotableStage(this.store.itemRuns(run.itemId));
+    if (!staged?.headCommit) throw new Error("The item has no staging release to promote");
+    const replaced = this.stagingReplaced(job, staged);
+    if (replaced) throw new Error(replaced);
+    if (!(await resolvesToCommit(job.repoPath, staged.headCommit))) {
+      throw new Error(`Run #${staged.id}'s staged commit (${staged.headCommit.slice(0, 12)}) is no longer in the repository`);
+    }
+    return { commit: staged.headCommit, label: `run #${staged.id}`, branch: null };
   }
 
   /**
@@ -947,9 +1060,14 @@ export class Runner extends EventEmitter<RunnerEvents> {
  * change it made since it left the base, by patch (`git cherry`).
  */
 async function isReleased(repo: string, commit: string, target: string): Promise<boolean> {
-  if (await git(repo, ["merge-base", "--is-ancestor", commit, target]).then(() => true, () => false)) return true;
+  if (await isAncestor(repo, commit, target)) return true;
   const missing = await git(repo, ["cherry", target, commit]).catch(() => "+");
   return !missing.split("\n").some((line) => line.startsWith("+"));
+}
+
+/** Whether `commit` itself is on `target`. */
+function isAncestor(repo: string, commit: string, target: string): Promise<boolean> {
+  return git(repo, ["merge-base", "--is-ancestor", commit, target]).then(() => true, () => false);
 }
 
 /** How a run ended: how it was stopped, if it was, else whether it did its work. */

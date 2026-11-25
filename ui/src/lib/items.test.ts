@@ -14,6 +14,7 @@ const run = (overrides: Partial<Run>): Run => ({
   followUpOf: null,
   instructions: null,
   mode: "change",
+  stage: null,
   itemId: 1,
   sessionId: null,
   repliedAt: null,
@@ -44,9 +45,10 @@ test("toItem points at the runs the server named", () => {
     withChangesId: 1,
     replied: false,
     canRelease: true,
+    canPromote: false,
   });
   expect([item.root.id, item.latest.id, item.latestWork.id, item.withChanges?.id, item.canRelease]).toEqual([1, 2, 1, 1, true]);
-  expect(toItem({ ...{ id: 3, jobId: 1, state: "closed", verdict: "unknown", replied: false, canRelease: false }, runs: [run({ id: 3 })], latestWorkId: 3, withChangesId: null }).withChanges).toBeNull();
+  expect(toItem({ ...{ id: 3, jobId: 1, state: "closed", verdict: "unknown", replied: false, canRelease: false, canPromote: false }, runs: [run({ id: 3 })], latestWorkId: 3, withChangesId: null }).withChanges).toBeNull();
 });
 
 test("itemFields reads a report's reference and kind", () => {

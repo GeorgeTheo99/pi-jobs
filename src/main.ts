@@ -51,7 +51,8 @@ if (interrupted.length > 0) console.warn(`Marked ${interrupted.length} interrupt
 for (const run of interrupted) runner.retry(run);
 // A release the stop cut off needs the owner: it may have gone out.
 for (const run of interrupted.filter((r) => r.mode === "release" || r.mode === "ship")) {
-  void notifier.send({ event: "release_failed", title: `Release interrupted: ${store.getJob(run.jobId)?.name ?? `job #${run.jobId}`}`, message: "The server stopped during the release. Check whether it went out before releasing again.", path: `/runs/${run.id}`, jobId: run.jobId, runId: run.id });
+  const what = run.stage === "production" ? "promotion" : run.stage === "staging" ? "staging release" : "release";
+  void notifier.send({ event: "release_failed", title: `${what[0]!.toUpperCase()}${what.slice(1)} interrupted: ${store.getJob(run.jobId)?.name ?? `job #${run.jobId}`}`, message: `The server stopped during the ${what}. Check whether it went out before trying again.`, path: `/runs/${run.id}`, jobId: run.jobId, runId: run.id });
 }
 // Releases cut off by this stop, or a graceful one in the last day, may have gone out anyway.
 void runner.recheckInterruptedReleases(new Date(Date.now() - 24 * 60 * 60_000).toISOString()).catch((error) => {

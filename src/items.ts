@@ -19,10 +19,10 @@ export function autoReleaseBlocker(job: Pick<Job, "checkCommand">, run: Pick<Run
  * (a support report's triage, the run that implements it, and its release). Its state says what it
  * needs next.
  */
-export type ItemState = "approval" | "running" | "decision" | "review" | "failed" | "released" | "merged" | "closed";
+export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "merged" | "closed";
 
 /** States that wait on the owner: they head the Inbox and count in its badge. */
-export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "failed"];
+export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "staged", "failed"];
 
 /** A run as the API shows it: with its report's headline, verdict line and verdict, and whether it is merged. */
 export type RunView = Run & { summaryHeadline: string | null; summaryVerdict: string | null; verdict: Verdict; merged: boolean };
@@ -53,6 +53,19 @@ export function itemHeadCommit(runs: Pick<Run, "mode" | "headCommit" | "commits"
   return null;
 }
 
+/**
+ * The staging release an item can promote, from its runs (oldest first): its newest work is that
+ * succeeded staging release, or promotions of it that didn't succeed. Null otherwise: new work, a
+ * newer staging attempt or a promotion that went out ends it.
+ */
+export function promotableStage<R extends Pick<Run, "mode" | "stage" | "status">>(runs: R[]): R | null {
+  for (const run of runs.filter((r) => r.mode !== "ask").reverse()) {
+    if (run.stage === "production" && run.status !== "succeeded") continue;
+    return run.stage === "staging" && run.status === "succeeded" ? run : null;
+  }
+  return null;
+}
+
 export interface ItemView<R extends Omit<RunView, "summary">> {
   /** The id of its first run. */
   id: number;
@@ -69,6 +82,8 @@ export interface ItemView<R extends Omit<RunView, "summary">> {
   replied: boolean;
   /** Approve & release can start now. */
   canRelease: boolean;
+  /** Approve & promote can start now: the job promotes and the item's staging release can go to production. */
+  canPromote: boolean;
 }
 
 const isOpen = (run: Pick<Run, "status">) => ACTIVE_STATUSES.includes(run.status);
@@ -93,12 +108,14 @@ export function itemView<R extends Omit<RunView, "summary">>(runs: R[], job: Job
     latestWorkId: latestWork.id,
     withChangesId: withChanges?.id ?? null,
     replied: runs.some((run) => run.repliedAt !== null),
-    // Work that succeeded, or a release that failed (to try again); a release that went out is done until new work.
+    // Work that succeeded, or a release that failed (to try again); a release that went out is done until
+    // new work. A staged item can go to staging again (it may have been replaced there).
     canRelease:
       releasable &&
       !runs.some(isOpen) &&
       withChanges !== null &&
-      (RELEASE_MODES.includes(latestWork.mode) ? latestWork.status !== "succeeded" : latestWork.status === "succeeded"),
+      (RELEASE_MODES.includes(latestWork.mode) ? latestWork.status !== "succeeded" || latestWork.stage === "staging" : latestWork.status === "succeeded"),
+    canPromote: Boolean(job?.promoteInstructions) && !runs.some(isOpen) && promotableStage(runs) !== null,
   };
 }
 
@@ -107,7 +124,9 @@ type ListedRun = Omit<RunView, "summary">;
 function stateOf(runs: ListedRun[], latestWork: ListedRun, verdict: Verdict, withChanges: ListedRun | null): ItemState {
   if (runs.some((run) => run.status === "awaiting_approval")) return "approval";
   if (runs.some(isOpen)) return "running";
-  if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status === "succeeded") return "released";
+  // A promotion canceled before it started leaves the item on staging.
+  if (latestWork.stage === "production" && latestWork.status === "canceled" && promotableStage(runs)) return "staged";
+  if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status === "succeeded") return latestWork.stage === "staging" ? "staged" : "released";
   // A release that failed after it pushed (its verify command, a timeout) still needs the owner.
   if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status !== "canceled") return "failed";
   if (withChanges?.merged) return "merged";

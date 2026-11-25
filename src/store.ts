@@ -14,6 +14,12 @@ export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 export type RunMode = "change" | "ask" | "ship" | "release" | "command";
 /** Runs that release an item, by its agent or its release script. */
 export const RELEASE_MODES: readonly RunMode[] = ["ship", "release"];
+/**
+ * A release run's stage, for jobs that promote: "staging" releases the item to staging (the job's
+ * release instructions or script), "production" promotes the staged commit (its promote
+ * instructions). Null for a release that goes all the way, and for every other run.
+ */
+export type ReleaseStage = "staging" | "production";
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 /** Runs that haven't finished: one waiting for approval counts, so it holds back the schedule too. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = ["awaiting_approval", "queued", "running"];
@@ -67,6 +73,13 @@ export interface JobInput {
    * too, or the release fails.
    */
   verifyCommand: string | null;
+  /**
+   * Instructions for the agent to promote an item's staged commit to production. When set, releases
+   * stop at staging and the owner promotes each item afterwards; null for one-stage releases.
+   */
+  promoteInstructions: string | null;
+  /** Shell command run after a promotion exits 0 (a production health check, say); it must exit 0 too. */
+  promoteVerifyCommand: string | null;
   /** Ship an item as soon as a run of it succeeds with changes, without waiting for the owner. */
   autoRelease: boolean;
   enabled: boolean;
@@ -103,6 +116,8 @@ export interface Run {
   /** A follow-up's instructions, which take the place of the job's. */
   instructions: string | null;
   mode: RunMode;
+  /** A release run's stage when its job promotes; null otherwise. */
+  stage: ReleaseStage | null;
   /** The first run of this one's item: a triggered run, with its retries and follow-ups. */
   itemId: number;
   /** The agent session the run used, which its item's later runs resume; null for agents without sessions. */
@@ -130,7 +145,7 @@ export interface Run {
 }
 
 export type RunPatch = Partial<
-  Omit<Run, "id" | "jobId" | "trigger" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "itemId" | "createdAt">
+  Omit<Run, "id" | "jobId" | "trigger" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "stage" | "itemId" | "createdAt">
 >;
 
 export const DEFAULT_RETRIES = 2;
@@ -321,6 +336,9 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["runs", "requested_by", "TEXT"],
   ["jobs", "kind", "TEXT NOT NULL DEFAULT 'agent'"],
   ["jobs", "command", "TEXT"],
+  ["jobs", "promote_instructions", "TEXT"],
+  ["jobs", "promote_verify_command", "TEXT"],
+  ["runs", "stage", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -389,6 +407,8 @@ function toJob(row: Row): Job {
     releaseInstructions: (row.release_instructions as string | null) ?? null,
     autoRelease: row.auto_release === 1,
     verifyCommand: (row.verify_command as string | null) ?? null,
+    promoteInstructions: (row.promote_instructions as string | null) ?? null,
+    promoteVerifyCommand: (row.promote_verify_command as string | null) ?? null,
     approveRuns: row.approve_runs === 1,
     enabled: row.enabled === 1,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
@@ -444,6 +464,7 @@ function toRun(row: Row): Run {
     instructions: (row.instructions as string | null) ?? null,
     summary: (row.summary as string | null) ?? null,
     mode: row.mode === "ask" || row.mode === "ship" || row.mode === "release" || row.mode === "command" ? row.mode : "change",
+    stage: row.stage === "staging" || row.stage === "production" ? row.stage : null,
     itemId: Number(row.item_id ?? row.id),
     sessionId: (row.session_id as string | null) ?? null,
     requestedBy: (row.requested_by as string | null) ?? null,
@@ -593,8 +614,9 @@ export class Store {
       .prepare(
         `INSERT INTO jobs (name, kind, command, repo_path, base_ref, prompt, agent, schedule, webhook_token,
            timeout_minutes, check_command, push_branch, catch_up, retries, watch_command, approve_runs, ship_command,
-           release_instructions, verify_command, auto_release, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           release_instructions, verify_command, promote_instructions, promote_verify_command, auto_release, enabled,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -616,6 +638,8 @@ export class Store {
         input.shipCommand,
         input.releaseInstructions,
         input.verifyCommand,
+        input.promoteInstructions,
+        input.promoteVerifyCommand,
         input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         ts,
@@ -629,7 +653,8 @@ export class Store {
       .prepare(
         `UPDATE jobs SET name = ?, kind = ?, command = ?, repo_path = ?, base_ref = ?, prompt = ?, agent = ?, schedule = ?,
            webhook_token = ?, timeout_minutes = ?, check_command = ?, push_branch = ?, catch_up = ?, retries = ?,
-           watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, verify_command = ?, auto_release = ?, enabled = ?,
+           watch_command = ?, approve_runs = ?, ship_command = ?, release_instructions = ?, verify_command = ?,
+           promote_instructions = ?, promote_verify_command = ?, auto_release = ?, enabled = ?,
            updated_at = ?
          WHERE id = ?`,
       )
@@ -653,6 +678,8 @@ export class Store {
         input.shipCommand,
         input.releaseInstructions,
         input.verifyCommand,
+        input.promoteInstructions,
+        input.promoteVerifyCommand,
         input.autoRelease ? 1 : 0,
         input.enabled ? 1 : 0,
         now(),
@@ -728,18 +755,18 @@ export class Store {
   }
 
   /**
-   * Queues a ship run on `of`'s item: the job's ship command (mode "ship") or release instructions
-   * (mode "release"), recorded as the run's instructions. A ship command's run carries the item's agent
-   * session on, so the agent's next follow-up continues that conversation; a release run picks its
-   * session when it starts, like a follow-up.
+   * Queues a ship run on `of`'s item: the job's ship command (mode "ship") or release or promote
+   * instructions (mode "release"), recorded as the run's instructions. A ship command's run carries the
+   * item's agent session on, so the agent's next follow-up continues that conversation; a release run
+   * picks its session when it starts, like a follow-up.
    */
-  createRelease(of: Run, agent: AgentId, instructions: string, mode: "ship" | "release" = "ship"): Run {
+  createRelease(of: Run, agent: AgentId, instructions: string, mode: "ship" | "release" = "ship", stage: ReleaseStage | null = null): Run {
     const result = this.db
       .prepare(
-        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, item_id, session_id, created_at)
-         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (job_id, trigger, status, agent, payload, follow_up_of, instructions, mode, stage, item_id, session_id, created_at)
+         VALUES (?, 'manual', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(of.jobId, agent, of.payload, of.id, instructions, mode, of.itemId, mode === "ship" ? of.sessionId : null, now());
+      .run(of.jobId, agent, of.payload, of.id, instructions, mode, stage, of.itemId, mode === "ship" ? of.sessionId : null, now());
     return this.getRun(Number(result.lastInsertRowid))!;
   }
 
@@ -864,6 +891,14 @@ export class Store {
       .prepare(`SELECT id FROM runs WHERE summary IS NULL AND status NOT IN (${placeholders})`)
       .all(...ACTIVE_STATUSES)
       .map((row) => Number((row as { id: number }).id));
+  }
+
+  /** Staging releases of the job's other items that started after run `afterId`: each replaced what was on staging. */
+  laterStagings(jobId: number, itemId: number, afterId: number): Run[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE job_id = ? AND stage = 'staging' AND item_id != ? AND id > ? AND started_at IS NOT NULL ORDER BY id")
+      .all(jobId, itemId, afterId)
+      .map((r) => toRun(r as Row));
   }
 
   /** Releases a server stop cut off since `since`: they may have gone out before it. */

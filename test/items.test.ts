@@ -20,6 +20,7 @@ const run = (overrides: Partial<Run> & { merged?: boolean }): ReturnType<typeof 
       followUpOf: null,
       instructions: null,
       mode: "change",
+      stage: null,
       itemId: 1,
       sessionId: null,
       requestedBy: null,
@@ -93,6 +94,25 @@ test("releases: released once one succeeds; releasable with instructions or a sc
   // A release that pushed, then failed its verify command: on main, but still the owner's to check.
   const pushedThenFailed = itemView([run({ id: 1, commits: 1, merged: true }), run({ id: 2, followUpOf: 1, mode: "release", status: "failed" })], releasing);
   assert.equal(pushedThenFailed.state, "failed");
+});
+
+test("promotions: a staging release waits as staged; it can be promoted, or staged again, until a promotion goes out", () => {
+  const promoting = { releaseInstructions: "Stage it", shipCommand: null, promoteInstructions: "Promote it" } as Job;
+  const work = run({ id: 1, commits: 1, headCommit: "abc" });
+  const staged = run({ id: 2, followUpOf: 1, trigger: "manual", mode: "release", stage: "staging", headCommit: "abc" });
+  const waiting = itemView([work, staged], promoting);
+  assert.deepEqual([waiting.state, waiting.canPromote, waiting.canRelease], ["staged", true, true]);
+  assert.equal(itemView([work, staged], releasing).canPromote, false, "a job without promote instructions doesn't promote");
+  const failed = itemView([work, staged, run({ id: 3, followUpOf: 2, mode: "release", stage: "production", status: "failed" })], promoting);
+  assert.deepEqual([failed.state, failed.canPromote, failed.canRelease], ["failed", true, true]);
+  const promoted = itemView([work, staged, run({ id: 3, followUpOf: 2, mode: "release", stage: "production" })], promoting);
+  assert.deepEqual([promoted.state, promoted.canPromote, promoted.canRelease], ["released", false, false]);
+  const changedSince = itemView([work, staged, run({ id: 3, followUpOf: 2, commits: 1, headCommit: "def" })], promoting);
+  assert.deepEqual([changedSince.state, changedSince.canPromote, changedSince.canRelease], ["review", false, true], "new work is staged before it is promoted");
+  const canceled = itemView([work, staged, run({ id: 3, followUpOf: 2, mode: "release", stage: "production", status: "canceled" })], promoting);
+  assert.deepEqual([canceled.state, canceled.canPromote], ["staged", true], "a canceled promotion leaves the item staged");
+  const restaging = itemView([work, staged, run({ id: 3, followUpOf: 2, mode: "release", stage: "staging", status: "failed" })], promoting);
+  assert.deepEqual([restaging.state, restaging.canPromote], ["failed", false], "a failed staging release may have replaced what was staged");
 });
 
 test("a command run's output is never read as an agent's verdict", () => {

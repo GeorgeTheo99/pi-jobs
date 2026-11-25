@@ -38,6 +38,8 @@ const EMPTY_DRAFT: JobDraft = {
   shipCommand: "",
   releaseInstructions: "",
   verifyCommand: "",
+  promoteInstructions: "",
+  promoteVerifyCommand: "",
   autoRelease: false,
   approveRuns: false,
   enabled: true,
@@ -84,7 +86,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
       // no agent, checks or release: drop anything set while the form was in Agent mode.
       const changes: Partial<JobDraft> =
         draft.kind === "command"
-          ? { ...draft, agent: null, baseRef: "", prompt: "", checkCommand: "", watchCommand: "", pushBranch: false, shipCommand: "", releaseInstructions: "", verifyCommand: "", autoRelease: false }
+          ? { ...draft, agent: null, baseRef: "", prompt: "", checkCommand: "", watchCommand: "", pushBranch: false, shipCommand: "", releaseInstructions: "", verifyCommand: "", promoteInstructions: "", promoteVerifyCommand: "", autoRelease: false }
           : { ...draft, command: "" };
       delete changes.enabled;
       const saved = job ? await api.patchJob(job.id, changes) : await api.createJob({ ...draft, ...changes });
@@ -452,7 +454,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             <Field
               label="Verify command"
               error={fields.verifyCommand}
-              hint="Optional. Runs after a release (a health check, say); the release fails unless it exits 0."
+              hint="Optional. Runs after a release (a health check, say), with the released commit in PI_JOBS_RELEASE_COMMIT; the release fails unless it exits 0."
             >
               {(p) => (
                 <input
@@ -461,6 +463,38 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                   value={draft.verifyCommand}
                   onChange={(e) => set("verifyCommand", e.target.value)}
                   placeholder="curl -fsS http://127.0.0.1:8100/api/health"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                />
+              )}
+            </Field>
+            <Field
+              label="Promote instructions"
+              error={fields.promoteInstructions}
+              hint="Optional, for a release in two stages. With these, the release above goes to staging only, and a released item waits as Staged until you promote it: the agent then ships exactly the commit staging verified, as these say. Promotions are never automatic or retried, and another item's staging release rules out promoting the one it replaced."
+            >
+              {(p) => (
+                <textarea
+                  {...p}
+                  className="field min-h-[96px] resize-y leading-relaxed"
+                  value={draft.promoteInstructions}
+                  onChange={(e) => set("promoteInstructions", e.target.value)}
+                  placeholder='Promote the staged commit the way docs/deployment.md says: git push origin "$PI_JOBS_RELEASE_COMMIT:refs/heads/main", then check that production reports that revision.'
+                />
+              )}
+            </Field>
+            <Field
+              label="Promote verify command"
+              error={fields.promoteVerifyCommand}
+              hint="Optional. Runs after a promotion, with the promoted commit in PI_JOBS_RELEASE_COMMIT; the promotion fails unless it exits 0."
+            >
+              {(p) => (
+                <input
+                  {...p}
+                  className="field font-mono text-[13px]"
+                  value={draft.promoteVerifyCommand}
+                  onChange={(e) => set("promoteVerifyCommand", e.target.value)}
+                  placeholder="curl -fsS http://127.0.0.1:8121/api/health"
                   spellCheck={false}
                   autoCapitalize="off"
                 />
@@ -515,6 +549,7 @@ function JobItems({ job }: { job: Job }) {
     job.enabled ? null : "Paused",
     job.watchCommand ? "Watches for new items" : null,
     job.releaseInstructions || job.shipCommand ? (job.autoRelease ? "Releases automatically" : "Approve & release on finished items") : null,
+    job.promoteInstructions ? "Releases to staging; you promote" : null,
     job.schedule ? `${describeSchedule(job.schedule)}${job.nextRunAt ? `, next ${relativeTime(job.nextRunAt, now)}` : ""}` : "No schedule",
     job.watchCommand && job.watchCheckedAt ? `checked ${relativeTime(job.watchCheckedAt, now)}` : null,
     job.webhookToken ? "Webhook on" : null,
