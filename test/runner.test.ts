@@ -120,14 +120,44 @@ test("scheduled fires skip while a run is active; queued runs can be canceled", 
   assert.ok("run" in first);
   assert.deepEqual(ctx.runner.trigger(job, "schedule"), { skipped: "a run of this job is already queued or running" });
 
+  const settings = ctx.store.getSettings();
+  ctx.store.saveSettings({ ...settings, maxConcurrent: 1 });
   const second = ctx.runner.trigger(job, "webhook", '{"bug": 1}');
   assert.ok("run" in second);
-  assert.equal(ctx.store.getRun(second.run.id)?.status, "queued", "one run per job at a time");
+  assert.equal(ctx.store.getRun(second.run.id)?.status, "queued", "no free slot");
   assert.equal(ctx.runner.cancel(second.run.id)?.status, "canceled");
 
   const finished = waitForFinish(ctx.runner, first.run.id);
   ctx.runner.cancel(first.run.id);
   await finished;
+});
+
+test("a job's items run side by side, one run per item at a time", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("sleep");
+  const job = ctx.store.createJob(ctx.jobInput(), null);
+  const first = ctx.runner.trigger(job, "webhook", '{"bug": 1}');
+  const second = ctx.runner.trigger(job, "webhook", '{"bug": 2}');
+  assert.ok("run" in first && "run" in second);
+  assert.equal(ctx.store.getRun(first.run.id)?.status, "running");
+  assert.equal(ctx.store.getRun(second.run.id)?.status, "running", "another item of the same job");
+
+  const firstDone = waitForFinish(ctx.runner, first.run.id);
+  ctx.runner.cancel(first.run.id);
+  const canceled = await firstDone;
+  // "finished" fires just before the run frees its slot.
+  while (ctx.runner.isActive(canceled.id)) await new Promise((resolve) => setTimeout(resolve, 10));
+  const followUp = ctx.runner.followUp(canceled, "Try again");
+  const secondFollowUp = ctx.runner.followUp(ctx.store.getRun(second.run.id)!, "And this");
+  assert.equal(ctx.store.getRun(followUp.id)?.status, "running", "its item has no active run");
+  assert.equal(ctx.store.getRun(secondFollowUp.id)?.status, "queued", "its item's run is still going");
+
+  for (const id of [followUp.id, second.run.id, secondFollowUp.id]) {
+    const finished = waitForFinish(ctx.runner, id);
+    ctx.runner.cancel(id);
+    await finished;
+  }
 });
 
 test("an unknown base ref fails the run cleanly", async (t) => {
@@ -443,7 +473,8 @@ test("a watch starts one run for each new item, with the item as the payload", a
   assert.equal(first.seen, 0);
   assert.deepEqual(first.runs.map((run) => run.trigger), ["watch", "watch"]);
   assert.deepEqual(JSON.parse(first.runs[0]!.payload!), { id: "r1", title: "Crash" });
-  for (const run of first.runs) await waitForFinish(ctx.runner, run.id);
+  // The items run side by side.
+  await Promise.all(first.runs.map((run) => waitForFinish(ctx.runner, run.id)));
 
   writeFileSync(path.join(ctx.root, "items.jsonl"), '{"id":"r3"}\n{"id":"r1","title":"Crash"}\n');
   const second = await ctx.runner.watch(job);
@@ -741,6 +772,30 @@ test("a question answers from the item's latest commits and keeps nothing", asyn
   assert.match(prompt, /^Now do it/);
   assert.match(prompt, /based on run #\d+'s result/);
   assert.equal(next.itemId, changed.id);
+});
+
+test("a message that changes nothing is kept as an answer; one that changes something stays work", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  ctx.useFakeAgent("commit");
+  const job = ctx.store.createJob(ctx.jobInput({ checkCommand: "exit 1" }), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const root = await waitForFinish(ctx.runner, first.run.id);
+
+  ctx.useFakeAgent("noop");
+  const answer = await waitForFinish(ctx.runner, ctx.runner.followUp(root, "What are the risks?").id);
+  assert.equal(answer.status, "succeeded", answer.error ?? "");
+  assert.equal(answer.mode, "ask");
+  assert.equal(answer.checkStatus, null, "no changes, so no check");
+  assert.equal(answer.branch, null);
+
+  ctx.useFakeAgent("edit");
+  const change = await waitForFinish(ctx.runner, ctx.runner.followUp(answer, "Rename it").id);
+  assert.equal(change.mode, "change");
+  assert.equal(change.commits, 1);
+  assert.equal(change.checkStatus, "failed", "changes are checked");
+  assert.match(git(ctx.repo, "show", `${change.branch}:agent-output.txt`), /If it only asks a question/);
 });
 
 test("an item's runs share one Pi session, resumed by id in the same directory", async (t) => {

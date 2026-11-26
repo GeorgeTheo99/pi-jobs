@@ -422,7 +422,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             <Field
               label="Release instructions"
               error={fields.releaseInstructions}
-              hint="For the agent. It continues the item's conversation in a worktree of its result and, in that run only, may merge, push, deploy and publish. Say how this repository releases, or point to its AGENTS.md. It is never retried; a failure goes back to the agent with your next Make changes."
+              hint="For the agent. It continues the item's conversation in a worktree of its result and, in that run only, may merge, push, deploy and publish. Say how this repository releases, or point to its AGENTS.md. It is never retried; a failure goes back to the agent with your next message."
             >
               {(p) => (
                 <textarea
@@ -437,7 +437,7 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
             <Field
               label="Or a release script"
               error={fields.shipCommand}
-              hint="A script instead of the agent: it runs in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO. Write it to fail closed; its output goes back to the agent with your next Make changes."
+              hint="A script instead of the agent: it runs in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO. Write it to fail closed; its output goes back to the agent with your next message."
             >
               {(p) => (
                 <input

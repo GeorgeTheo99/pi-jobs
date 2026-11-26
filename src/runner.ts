@@ -9,6 +9,7 @@ import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolve
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { agentOutput, buildPrompt, releaseOutcome, type PreviousRun } from "./prompt.ts";
 import { autoReleaseBlocker, promotableStage } from "./items.ts";
+import { explicitVerdict } from "./report.ts";
 import { ACTIVE_STATUSES, INTERRUPTED, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
 import { parseWatchOutput, runWatchCommand, type WatchResult } from "./watch.ts";
 
@@ -27,6 +28,8 @@ type StopReason = "canceled" | "timed_out" | "interrupted";
 
 interface ActiveRun extends ProcessHandle {
   jobId: number;
+  itemId: number;
+  mode: RunMode;
   /** Random per-run marker inherited by every process the run starts, unique across server instances. */
   token: string;
   stopReason: StopReason | null;
@@ -430,7 +433,12 @@ export class Runner extends EventEmitter<RunnerEvents> {
     return this.active.has(runId);
   }
 
-  /** Starts queued runs while slots are free, one run per job at a time; retries wait for their time. */
+  /**
+   * Starts queued runs while slots are free; retries wait for their time. Items of a job run side by side
+   * (each in its own worktree), but one run per item at a time, since its runs share a directory and session.
+   * A command job's runs share its directory, and releases of a job push to the same base branch, so each
+   * of those runs one per job at a time.
+   */
   pump(): void {
     if (this.stopping) return;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
@@ -444,7 +452,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
         continue;
       }
       if (this.active.size >= maxConcurrent) break;
-      if ([...this.active.values()].some((a) => a.jobId === run.jobId)) continue;
+      if ([...this.active.values()].some((a) => a.itemId === run.itemId || (a.jobId === run.jobId && perJob(a.mode) && perJob(run.mode)))) continue;
       this.start(run);
     }
     if (wakeAt !== Infinity) {
@@ -480,6 +488,8 @@ export class Runner extends EventEmitter<RunnerEvents> {
     }
     const active: ActiveRun = {
       jobId: run.jobId,
+      itemId: run.itemId,
+      mode: run.mode,
       token: randomUUID(),
       child: null,
       killTimer: null,
@@ -583,11 +593,17 @@ export class Runner extends EventEmitter<RunnerEvents> {
 
       let checkStatus: Run["checkStatus"] = null;
       // A release runs the repository's own tests and may already have pushed: a check after it would decide nothing.
+      // Nor would one after a run that changed nothing (it answered a question, say): its code was checked before.
       if (job.checkCommand && !release && exitCode === 0 && !active.stopReason) {
-        this.note(run.id, `Running check: ${job.checkCommand}`);
-        const checkCode = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.checkCommand], worktree, deadline);
-        checkStatus = checkCode === 0 ? "passed" : "failed";
-        this.note(run.id, `Check ${checkStatus}${checkCode === null ? "" : ` (code ${checkCode})`}`);
+        const changed = (await git(worktree, ["status", "--porcelain"])) !== "" || (await git(worktree, ["rev-parse", "HEAD"])) !== baseCommit;
+        if (changed) {
+          this.note(run.id, `Running check: ${job.checkCommand}`);
+          const checkCode = await this.runProcess(run.id, active, ["/bin/sh", "-c", job.checkCommand], worktree, deadline);
+          checkStatus = checkCode === 0 ? "passed" : "failed";
+          this.note(run.id, `Check ${checkStatus}${checkCode === null ? "" : ` (code ${checkCode})`}`);
+        } else {
+          this.note(run.id, "No changes; skipped the check");
+        }
       }
 
       const committed = await this.commitChanges(job, run, worktree, baseCommit);
@@ -645,6 +661,11 @@ export class Runner extends EventEmitter<RunnerEvents> {
       // A failed check or push means the agent finished its work; running it again would redo that.
       // A release may have done part of something irreversible, so only the owner starts another.
       const retryable = !release && (status === "timed_out" || (status === "failed" && checkStatus !== "failed" && !pushError));
+      // The owner's message goes to the agent as is, and the agent decides whether it asks or asks for changes.
+      // A follow-up that changed nothing and gave no verdict answered a question: it is kept as one, so the
+      // item's state and verdict stay what its work concluded.
+      const answered = run.mode === "change" && run.followUpOf !== null && status === "succeeded" && commits === 0 && explicitVerdict(this.readSummary(run.id)) === null;
+      if (answered) this.note(run.id, "It changed nothing: kept as an answer");
       const finished = this.finish(
         run.id,
         {
@@ -656,6 +677,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
           checkStatus,
           pushedTo,
           error: active.stopReason === "interrupted" ? INTERRUPTED : (pushError ?? releaseError),
+          ...(answered && { mode: "ask" as const }),
         },
         retryable,
       );
@@ -1054,6 +1076,9 @@ export class Runner extends EventEmitter<RunnerEvents> {
     appendFileSync(this.logPath(runId), `[pi-jobs ${new Date().toISOString()}] ${message}\n`);
   }
 }
+
+/** Runs that run one per job at a time: a command job's (they share its directory) and releases (they push to its base branch). */
+const perJob = (mode: RunMode) => mode === "command" || RELEASE_MODES.includes(mode);
 
 /**
  * Whether a commit is on the base branch: itself, or (after a rebase gave its commits new ids) every

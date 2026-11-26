@@ -259,13 +259,13 @@ function SettingsForm({ initial }: { initial: Settings }) {
         <fieldset className="grid gap-4">
           <legend className="section-label mb-3">Capacity</legend>
           <div className="max-w-[220px]">
-            <Field label="Runs at the same time" error={fields.maxConcurrent} hint="One run per job at a time either way.">
+            <Field label="Runs at the same time" error={fields.maxConcurrent} hint="Up to 10. A job's items run side by side; each item runs one message at a time.">
               {(p) => (
                 <input
                   {...p}
                   type="number"
                   min={1}
-                  max={8}
+                  max={10}
                   className="field tabular-nums"
                   value={settings.maxConcurrent}
                   onChange={(e) => update({ maxConcurrent: Number(e.target.value) })}

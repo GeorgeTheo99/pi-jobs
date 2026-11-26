@@ -305,14 +305,14 @@ const DEFINITIONS: Record<string, Definition> = {
     outcome: (response) => ({ text: "Replaced the webhook token (shown once on this card)", secret: (response as Job).webhookToken ?? undefined }),
   },
   follow_up: {
-    help: `follow_up {"runId", "instructions", "mode": "change" | "ask"}: continue an item (any of its runs): Make changes, or Ask a question.`,
+    help: `follow_up {"runId", "instructions", "mode"?: "ask"}: continue an item (any of its runs) with a message, as the owner would: its agent answers a question or makes the changes asked for. "mode": "ask" keeps it to an answer, with no changes.`,
     plan(args, store) {
       const run = findRun(args, store);
       if (typeof args.instructions !== "string" || !args.instructions.trim()) throw new ActionError("instructions must say what the agent should do");
       const mode = args.mode ?? "change";
       if (mode !== "change" && mode !== "ask") throw new ActionError('mode must be "change" or "ask"');
       return {
-        title: `${mode === "ask" ? "Ask about" : "Make changes on"} ${runLabel(run, store)}'s item`,
+        title: `${mode === "ask" ? "Ask about" : "Message"} ${runLabel(run, store)}'s item`,
         changes: [{ field: "instructions", before: null, after: args.instructions.trim() }],
         risky: false,
         basis: null,

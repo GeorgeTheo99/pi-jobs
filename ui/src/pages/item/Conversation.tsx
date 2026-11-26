@@ -1,4 +1,4 @@
-import { MessageCircleQuestion, Rocket, Wrench } from "lucide-react";
+import { MessageSquare, Rocket } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Markdown } from "@/components/Markdown";
@@ -59,7 +59,6 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
   // Short replies show whole; long reports fold unless they are the newest or selected.
   const long = report.length > 280 || report.split("\n").length > 4;
   const [expanded, setExpanded] = useState(selected || latest || !long);
-  const ask = run.mode === "ask";
   const release = run.mode === "release";
   if (run.mode === "ship") return <ScriptReleaseTurn run={run} selected={selected} />;
   if (run.mode === "command") return <CommandTurn run={run} selected={selected} />;
@@ -68,15 +67,9 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
       {run.instructions !== null && run.retryOf === null ? (
         <div className="turn-you">
           <div className="turn-label">
-            {ask ? (
-              <MessageCircleQuestion aria-hidden className="size-3.5" />
-            ) : release ? (
-              <Rocket aria-hidden className="size-3.5" />
-            ) : (
-              <Wrench aria-hidden className="size-3.5" />
-            )}
+            {release ? <Rocket aria-hidden className="size-3.5" /> : <MessageSquare aria-hidden className="size-3.5" />}
             {/* A release may come from the job's Release automatically, not the owner. */}
-            {release ? `${run.stage === "production" ? "Promotion" : run.stage === "staging" ? "Release to staging" : "Release"}${releasedBy(run)}` : `You · ${ask ? "Ask" : "Make changes"}`} ·{" "}
+            {release ? `${run.stage === "production" ? "Promotion" : run.stage === "staging" ? "Release to staging" : "Release"}${releasedBy(run)}` : "You"} ·{" "}
             {relativeTime(run.createdAt, now)}
           </div>
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-bone">{run.instructions}</p>
@@ -107,7 +100,7 @@ export function Turn({ run, selected, latest }: { run: Run; selected: boolean; l
           <p className="text-[14px] text-fog">Waiting for a free slot. It starts as soon as another run finishes.</p>
         ) : run.status === "running" ? (
           <p className="text-[14px] text-fog">
-            {ask ? "Looking into it…" : release ? (run.stage === "production" ? "Promoting…" : "Releasing…") : "Working on it…"}{" "}
+            {release ? (run.stage === "production" ? "Promoting…" : "Releasing…") : "Working on it…"}{" "}
             {!selected && (
               <Link to={`/runs/${run.id}`} className="text-amber hover:underline">
                 Watch the log

@@ -6,7 +6,7 @@ import { isGitRepo, resolvesToCommit } from "./git.ts";
 import { HttpError } from "./http.ts";
 import { cronError } from "./scheduler.ts";
 import { jobBody } from "./actions.ts";
-import { DEFAULT_RETRIES, MAX_RETRIES, type Job, type JobInput, type Settings } from "./store.ts";
+import { DEFAULT_RETRIES, MAX_CONCURRENT, MAX_RETRIES, type Job, type JobInput, type Settings } from "./store.ts";
 
 /** The longest instructions, messages and release instructions the API takes. */
 export const MAX_INSTRUCTIONS = 20_000;
@@ -171,8 +171,8 @@ export function validateSettings(body: Record<string, unknown>, current: Setting
   }
   if (typeof body.defaultAgent !== "string" || !Object.hasOwn(agents, body.defaultAgent)) fields.defaultAgent = "Choose one of the agents";
   const maxConcurrent = Number(body.maxConcurrent);
-  if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 8) {
-    fields.maxConcurrent = "Use a whole number from 1 to 8";
+  if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > MAX_CONCURRENT) {
+    fields.maxConcurrent = `Use a whole number from 1 to ${MAX_CONCURRENT}`;
   }
   // Clients from before notifications leave these out and keep them.
   const optional = (key: "notifyCommand" | "publicUrl") =>

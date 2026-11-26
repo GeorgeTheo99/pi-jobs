@@ -85,7 +85,7 @@ history:
 - **Outcome:** exit 0 succeeds; anything else fails and is retried like an agent run. The run page
   shows the end of what it printed; the log has all of it.
 - **Not for command jobs:** an agent, instructions, base ref, check, watch, release script or verify command, release
-  instructions, branch pushes, Ask and Make changes. **Chat about it** works, and failures notify.
+  instructions, branch pushes, messages on an item. **Chat about it** works, and failures notify.
 - **Stopping:** cancel and timeouts kill the command's process group and anything that inherited
   the run's `PI_JOBS_RUN_TOKEN`. Unlike an agent's worktree, the directory is shared, so processes
   are never found by their working directory.
@@ -118,16 +118,22 @@ approval** (`/runs?filter=approval`).
 
 Payloads from webhooks and watches are marked in the prompt as outside data, never instructions.
 
-### Ask and Make changes
+### Messages
 
-Once a run finishes, you continue its item from the composer at the bottom of its page (or
-`POST /api/runs/<id>/follow-up` with `{"instructions": "...", "mode": "ask" | "change"}`):
+Once a run finishes, you continue its item from the composer at the bottom of its page with one
+**Send** button (or `POST /api/runs/<id>/follow-up` with `{"instructions": "..."}`). The agent decides
+what the message asks for:
 
-| | **Ask** | **Make changes** (the default mode) |
+| | A question | An instruction |
 |---|---|---|
-| For | A question: "why one order for the whole household?" | An instruction: "implement the proposal", "rename the button" |
-| The agent | Reads code and runs read-only commands in a temporary checkout of the item's newest commits, then answers | Edits, tests and commits on a new branch built on the item's newest commits |
-| Kept | The answer only: no branch, no commits, no check command | The answer and the commits, shown under **Changes** |
+| For example | "why one order for the whole household?" | "implement the proposal", "rename the button" |
+| The agent | Reads code and runs read-only commands, then answers | Edits, tests and commits |
+| Kept | The answer only, shown as **Answered**: no branch, no commits, no check command | The answer and the commits, shown under **Changes** |
+
+Either way it works on a new branch built on the item's newest commits. A run that changed nothing
+and gave no `Verdict:` line is kept as an answer, so the item's state and verdict stay what its work
+concluded; one with commits runs the check command like any work. `"mode": "ask"` in the API keeps a
+message to an answer: it runs in a temporary checkout and never commits.
 
 With Pi (or a `pi-…` launcher, see [Agents](#agents)), every run of an item continues one
 conversation: pi-jobs gives the item a session ID (`pi --session-id`) and runs it in the same directory (`worktrees/job-<id>/item-<id>`), so the agent
@@ -183,7 +189,7 @@ after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_R
   decide what comes next. **Release again** runs it once more, from the release's own head (it may
   have rebased or committed a version bump). A release a server stop cut off says so if its result
   is already on the base branch.
-- **When it fails, the agent fixes it.** Send **Make changes** on the item: the agent continues the
+- **When it fails, the agent fixes it.** Send a message on the item: the agent continues the
   conversation (and gets a script's output as context). When that run succeeds, release again.
 - **Done.** A succeeded release marks the item **Released** and deletes the item's branches that
   are already on the base branch. Commits a release leaves off `origin/<base>` stay on its branch.
@@ -232,8 +238,8 @@ item starts one with that context.
   repositories, and ends its reply with the changes it proposes. Each change is a card; nothing
   happens until you **Apply** it.
 - **Cards are API calls.** Applying a card makes the same request as the matching button, with the
-  same validation: create, change, pause or delete a job, Run now, check a watch, Ask or Make
-  changes on an item, approve, dismiss, cancel, release, promote, close or mark replied, change Settings
+  same validation: create, change, pause or delete a job, Run now, check a watch, send a
+  message on an item, approve, dismiss, cancel, release, promote, close or mark replied, change Settings
   (agent commands and added agents too), create or revoke an API token, replace a webhook token. A card says what
   it does and shows the exact old and new value of every field it changes. If its job or the
   settings changed since it was proposed, applying it fails and asks for a fresh proposal.
@@ -286,8 +292,9 @@ never sends replies, and merges or pushes only in a release you start (or a job'
 automatically).
 
 Jobs are created with `POST /api/jobs` and changed with `PUT` or `PATCH /api/jobs/<id>`: either way
-only the fields sent change. Paused jobs ignore their schedule, webhook and watch. Each job runs one at a time, and **Settings** caps
-how many runs happen at once (default 2).
+only the fields sent change. Paused jobs ignore their schedule, webhook and watch. A job's items run side by side, one run per item at a time
+(a command job's runs, and a job's releases, one per job at a time), and **Settings** caps how many
+runs happen at once (default 2, at most 10).
 
 A run that fails or times out is retried up to the job's **Retries** (default 2, at most 5) as a new
 run with the same trigger and payload, after 1 minute, then 4, 16 and so on. That includes runs the

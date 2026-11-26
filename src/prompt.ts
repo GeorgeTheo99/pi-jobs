@@ -71,7 +71,7 @@ export function buildPrompt(
         : `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the release of this item's result${run.stage === "staging" ? " to staging" : ""}, which the job's owner approved. The instructions above say how to release it.`
       : ask
       ? `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": the job's owner asks the question above, following up on run #${run.followUpOf}.`
-      : `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": a follow-up to run #${run.followUpOf}, with the instructions above from the job's owner.`;
+      : `You are running unattended as pi-jobs run #${run.id} of the job "${job.name}": a follow-up to run #${run.followUpOf}, with the message above from the job's owner.`;
   const lines = [followUp ? run.instructions!.trim() : jobBody, "", "---", intro];
   if (resumed) lines.push("- This continues your earlier conversation about this item, so you already have its context.");
   if (ask) {
@@ -106,6 +106,11 @@ export function buildPrompt(
       '- End with a short report. Its first line is "Released" or "Not released"; then what went out (commits, version, where it is live) and how you checked it.',
     );
   } else {
+    if (followUp) {
+      lines.push(
+        "- Decide what the message asks for. If it only asks a question (about the code, your report, the risks), answer it: read files and run read-only commands as needed, but change no files and make no commits. If it asks for changes, make them.",
+      );
+    }
     lines.push(
       `- Your working directory is a fresh git worktree of ${job.repoPath} on branch ${branch}, based on ${base}.`,
       "- Nobody is watching: do not ask questions. Make reasonable decisions and finish the task.",

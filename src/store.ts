@@ -145,7 +145,7 @@ export interface Run {
 }
 
 export type RunPatch = Partial<
-  Omit<Run, "id" | "jobId" | "trigger" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "mode" | "stage" | "itemId" | "createdAt">
+  Omit<Run, "id" | "jobId" | "trigger" | "payload" | "attempt" | "retryOf" | "notBefore" | "followUpOf" | "instructions" | "stage" | "itemId" | "createdAt">
 >;
 
 export const DEFAULT_RETRIES = 2;
@@ -208,12 +208,15 @@ export interface Settings {
   defaultAgent: AgentId;
   /** The built-in agents (pi, claude, codex) first, then any added in Settings, by id. */
   agents: Record<AgentId, { command: string }>;
+  /** Runs at the same time, 1 to MAX_CONCURRENT. */
   maxConcurrent: number;
   /** Shell command run on events that need the owner (PI_JOBS_EVENT, _TITLE, _MESSAGE, _URL in its environment); null for none. */
   notifyCommand: string | null;
   /** Where the owner opens the UI (behind a proxy, say), for links in notifications; null to use the local address. */
   publicUrl: string | null;
 }
+
+export const MAX_CONCURRENT = 10;
 
 export const DEFAULT_SETTINGS: Settings = {
   defaultAgent: "pi",
@@ -345,6 +348,7 @@ type Row = Record<string, SQLInputValue>;
 
 const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   status: "status",
+  mode: "mode",
   agent: "agent",
   requestedBy: "requested_by",
   summary: "summary",
