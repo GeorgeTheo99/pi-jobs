@@ -5,10 +5,17 @@ import path from "node:path";
 /** The agents pi-jobs knows out of the box; Settings can add more (another Pi launcher, say). */
 export const BUILTIN_AGENT_IDS = ["pi", "claude", "codex"] as const;
 export type BuiltinAgentId = (typeof BUILTIN_AGENT_IDS)[number];
-/** A built-in agent's id, or the name of one added in Settings, such as "pi-claude". */
+/** A built-in agent's id, one added in Settings such as "pi-claude", or Pi on a model alias such as "pi:gpt". */
 export type AgentId = string;
 /** Names for agents added in Settings: lowercase letters, digits and dashes, like a command name. */
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** Pi on one of its launcher's model aliases (`pi models`): "pi:<alias>" runs the pi agent as `pi <alias> …`. */
+export const PI_MODEL_AGENT_PATTERN = /^pi:([a-z0-9][a-z0-9._-]{0,63})$/;
+
+/** The model alias of a "pi:<alias>" agent, or null for any other agent. */
+export function piModelOf(agent: AgentId): string | null {
+  return PI_MODEL_AGENT_PATTERN.exec(agent)?.[1] ?? null;
+}
 
 export const PROMPT_TOKEN = "{prompt}";
 
@@ -30,9 +37,30 @@ export function isBuiltinAgent(value: unknown): value is BuiltinAgentId {
   return typeof value === "string" && (BUILTIN_AGENT_IDS as readonly string[]).includes(value);
 }
 
-/** What the UI and reports call an agent: a built-in's label, or an added agent's name. */
+/** What the UI and reports call an agent: a built-in's label, Pi with its model, or an added agent's name. */
 export function agentLabel(id: AgentId): string {
+  const model = piModelOf(id);
+  if (model) return `Pi · ${model}`;
   return isBuiltinAgent(id) ? AGENT_PRESETS[id].label : id;
+}
+
+/**
+ * The command line an agent runs: its command in Settings, or for "pi:<alias>" the pi agent's command
+ * with the alias right after the program, where Pi's launcher looks for it. Null for an unknown agent.
+ */
+export function agentCommand(agents: Record<AgentId, { command: string }>, id: AgentId): string | null {
+  if (Object.hasOwn(agents, id)) return agents[id]!.command;
+  const model = piModelOf(id);
+  const pi = agents.pi?.command;
+  if (!model || !pi) return null;
+  const args = splitCommand(pi);
+  const index = args.indexOf(commandProgram(args));
+  return [...args.slice(0, index + 1), model, ...args.slice(index + 1)].map(quoteArg).join(" ");
+}
+
+/** Quotes an argument for splitCommand, leaving plain words and the prompt token as they are. */
+function quoteArg(arg: string): string {
+  return /^[\w@%+=:,./{}-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
 /** Splits a command line like a POSIX shell would, without expansion. */
@@ -110,12 +138,18 @@ export function supportsSessions(command: string): boolean {
   }
 }
 
-/** Adds the session to an agent's argv, right after the program, when the agent supports sessions. */
+/**
+ * Adds the session to an agent's argv when the agent supports sessions: right after the program, or
+ * after `pi`'s first argument when that is a word rather than an option, since Pi's launcher reads a
+ * model alias (`pi claude -p …`) only as the first argument.
+ */
 export function withSession(argv: string[], sessionId: string | null): string[] {
   if (!sessionId) return argv;
   const program = commandProgram(argv);
   if (!isPiProgram(program)) return argv;
-  const index = argv.indexOf(program);
+  let index = argv.indexOf(program);
+  const next = argv[index + 1];
+  if (path.basename(program) === "pi" && next !== undefined && !next.startsWith("-")) index++;
   return [...argv.slice(0, index + 1), "--session-id", sessionId, ...argv.slice(index + 1)];
 }
 

@@ -145,7 +145,7 @@ function jobFields(value: unknown, name: string): Partial<Record<JobField, unkno
   if (unknown.length > 0) throw new ActionError(`Unknown job field${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
   const fields = value as Partial<Record<JobField, unknown>>;
   if (fields.agent !== undefined && fields.agent !== null && typeof fields.agent !== "string") {
-    throw new ActionError("agent must be null (the default) or the name of an agent in Settings");
+    throw new ActionError('agent must be null (the default), the name of an agent in Settings, or "pi:<model alias>"');
   }
   return fields;
 }
@@ -418,7 +418,7 @@ const DEFINITIONS: Record<string, Definition> = {
     outcome: (_response, args) => ({ text: boolArg(args, "replied", true) ? "Marked replied" : "Marked not replied" }),
   },
   update_settings: {
-    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "notifyCommand"?, "publicUrl"?, "agents"?: {"<agent id>": {"command"} | null}}}: change Settings. Agents are pi, claude, codex and any added by name (another Pi launcher such as "pi-claude"); a new name adds one, null removes an added one.`,
+    help: `update_settings {"changes": {"defaultAgent"?, "maxConcurrent"?, "notifyCommand"?, "publicUrl"?, "agents"?: {"<agent id>": {"command"} | null}}}: change Settings. Agents are pi, claude, codex and any added by name (another launcher); a new name adds one, null removes an added one. "pi:<alias>" (an alias in piModelAliases) is Pi on that model, for defaultAgent or a job's agent, without adding anything.`,
     plan(args, store) {
       const settings = store.getSettings();
       const { changes } = settingsChanges(args, settings);

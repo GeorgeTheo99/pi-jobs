@@ -9,7 +9,7 @@ import { ChatRunner } from "../src/chat.ts";
 import { loadConfig } from "../src/config.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import type { Run } from "../src/store.ts";
-import { git, setup, waitForFinish } from "./helpers.ts";
+import { fakePiLauncher, git, setup, waitForFinish } from "./helpers.ts";
 
 async function startApp(t: TestContext) {
   const ctx = setup();
@@ -213,7 +213,7 @@ test("settings validate commands and report availability", async (t) => {
   assert.equal(job.status, 201, JSON.stringify(job.json));
   assert.equal(job.json.agent, "pi-claude");
   const unknown = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", agent: "nope" });
-  assert.equal(unknown.json.fields.agent, "Choose one of pi, claude, codex, pi-claude, or the default");
+  assert.equal(unknown.json.fields.agent, 'Choose one of pi, claude, codex, pi-claude, "pi:<model alias>", or the default');
   const { "pi-claude": _removed, ...builtins } = added.json.agents;
   const inUse = await app.call("PUT", "/api/settings", { ...added.json, defaultAgent: "pi", agents: builtins });
   assert.equal(inUse.status, 400);
@@ -652,4 +652,38 @@ test("command jobs run in any directory, need a command, refuse agent-only field
   assert.equal(followUp.status, 409);
   const ship = await app.call("POST", `/api/runs/${run.id}/ship`, {});
   assert.equal(ship.status, 409);
+});
+
+test("Pi's model aliases are listed live and accepted as \"pi:<alias>\" for jobs, chats and the default", async (t) => {
+  const app = await startApp(t);
+  const { pi } = fakePiLauncher(app.root);
+  const settings = app.store.getSettings();
+  settings.agents.pi!.command = `${pi} -p {prompt}`;
+  app.store.saveSettings(settings);
+
+  const listed = await app.call("GET", "/api/pi-models");
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.json, { models: [{ alias: "fast", aliases: [], name: "fast-model", group: "cloud", default: false }], error: null });
+
+  const job = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", agent: "pi:fast" });
+  assert.equal(job.status, 201, JSON.stringify(job.json));
+  assert.equal(job.json.effectiveAgent, "pi:fast");
+  const gone = await app.call("POST", "/api/jobs", { name: "j", repoPath: app.repo, baseRef: "main", prompt: "p", agent: "pi:gone" });
+  assert.equal(gone.status, 400);
+  assert.match(gone.json.fields.agent, /no model alias "gone"/);
+  // A job keeps an alias that has since gone until its agent is changed: renaming it still works.
+  app.store.updateJob(job.json.id, { ...app.store.getJob(job.json.id)!, agent: "pi:gone" }, null);
+  assert.equal((await app.call("PATCH", `/api/jobs/${job.json.id}`, { name: "renamed" })).status, 200);
+
+  const current = (await app.call("GET", "/api/settings")).json;
+  const { agentInfo: _info, ...body } = current;
+  const saved = await app.call("PUT", "/api/settings", { ...body, defaultAgent: "pi:fast" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.json));
+  assert.equal(saved.json.defaultAgent, "pi:fast");
+  const badDefault = await app.call("PUT", "/api/settings", { ...body, defaultAgent: "pi:gone" });
+  assert.match(badDefault.json.fields.defaultAgent, /no model alias "gone"/);
+
+  const badChat = await app.call("POST", "/api/chats", { message: "hi", agent: "pi:gone" });
+  assert.equal(badChat.status, 400);
+  assert.match(badChat.json.fields.agent, /no model alias "gone"/);
 });

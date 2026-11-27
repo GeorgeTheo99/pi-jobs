@@ -42,7 +42,7 @@ test("cron validation and preview", () => {
   assert.ok(first && second && Date.parse(second) - Date.parse(first) === 5 * 60_000);
 });
 
-test("sessions apply to Pi only, right after the program", async () => {
+test("sessions apply to Pi only, right after the program or its model alias", async () => {
   const { supportsSessions, withSession } = await import("../src/agents.ts");
   assert.equal(supportsSessions("pi -p {prompt}"), true);
   assert.equal(supportsSessions("env A=1 /opt/bin/pi -p {prompt}"), true);
@@ -54,4 +54,26 @@ test("sessions apply to Pi only, right after the program", async () => {
   assert.deepEqual(withSession(["env", "A=1", "pi", "-p", "x"], "s1"), ["env", "A=1", "pi", "--session-id", "s1", "-p", "x"]);
   assert.deepEqual(withSession(["claude", "-p", "x"], "s1"), ["claude", "-p", "x"]);
   assert.deepEqual(withSession(["pi", "-p", "x"], null), ["pi", "-p", "x"]);
+  // Pi's launcher reads a model alias only as the first argument, so the session goes after it.
+  assert.deepEqual(withSession(["pi", "claude", "-p", "x"], "s1"), ["pi", "claude", "--session-id", "s1", "-p", "x"]);
+  assert.deepEqual(withSession(["env", "A=1", "/opt/bin/pi", "gpt", "-p", "x"], "s1"), ["env", "A=1", "/opt/bin/pi", "gpt", "--session-id", "s1", "-p", "x"]);
+  assert.deepEqual(withSession(["pi", "-p", "x"], "s1"), ["pi", "--session-id", "s1", "-p", "x"]);
+});
+
+test("pi:<alias> agents run the pi agent's command with the alias first", async () => {
+  const { agentCommand, agentLabel, piModelOf } = await import("../src/agents.ts");
+  const agents = { pi: { command: "pi -p {prompt}" }, claude: { command: "claude -p {prompt}" }, "pi-claude": { command: "pi-claude -p {prompt}" } };
+  assert.equal(piModelOf("pi:glm53flash"), "glm53flash");
+  assert.equal(piModelOf("pi"), null);
+  assert.equal(piModelOf("pi:"), null);
+  assert.equal(piModelOf("pi:Bad Alias"), null);
+  assert.equal(agentCommand(agents, "pi:claude"), "pi claude -p {prompt}");
+  assert.equal(agentCommand(agents, "pi-claude"), "pi-claude -p {prompt}");
+  assert.equal(agentCommand(agents, "codex"), null);
+  assert.equal(agentCommand(agents, "pi:"), null);
+  const wrapped = agentCommand({ pi: { command: `env A='x y' /opt/pi -p {prompt}` } }, "pi:gpt")!;
+  assert.deepEqual(splitCommand(wrapped), ["env", "A=x y", "/opt/pi", "gpt", "-p", "{prompt}"], "env assignments and quoting survive");
+  assert.equal(agentLabel("pi:gpt"), "Pi · gpt");
+  assert.equal(agentLabel("pi"), "Pi");
+  assert.equal(agentLabel("pi-claude"), "pi-claude");
 });

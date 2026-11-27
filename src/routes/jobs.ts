@@ -20,7 +20,7 @@ export function jobRoutes(ctx: AppContext): Route[] {
       /^\/api\/jobs$/,
       async (req) => {
         const body = await readJson(req);
-        const input = await validateJob(body, store.getSettings());
+        const input = await validateJob(body, store.getSettings(), null, runner.piModels);
         const job = store.createJob(input, body.webhookEnabled === true ? newToken() : null);
         scheduler.sync(job);
         return jobView(job);
@@ -33,7 +33,7 @@ export function jobRoutes(ctx: AppContext): Route[] {
       async (req, [id]) => {
         const existing = findJob(id);
         const body = await readJson(req);
-        const input = await validateJob(body, store.getSettings(), existing);
+        const input = await validateJob(body, store.getSettings(), existing, runner.piModels);
         const token =
           body.webhookEnabled === undefined
             ? existing.webhookToken
@@ -51,7 +51,7 @@ export function jobRoutes(ctx: AppContext): Route[] {
       async (req, [id]) => {
         const existing = findJob(id);
         const body = await readJson(req);
-        const input = await validateJob(body, store.getSettings(), existing);
+        const input = await validateJob(body, store.getSettings(), existing, runner.piModels);
         const token =
           body.webhookEnabled === undefined
             ? existing.webhookToken

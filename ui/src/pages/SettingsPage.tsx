@@ -1,8 +1,9 @@
 import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { PiModelSelect } from "@/components/PiModelSelect";
 import { TokensSection } from "@/components/TokensSection";
 import { ErrorNote, Field, PageHeader, Skeleton } from "@/components/ui";
-import { ApiError, agentLabel, api, type Settings } from "@/lib/api";
+import { ApiError, agentLabel, api, piModelOf, settingsAgentOf, type Settings } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 
 export function SettingsPage() {
@@ -85,7 +86,7 @@ function SettingsForm({ initial }: { initial: Settings }) {
           <p className="-mt-1 text-[13px] text-fog">Used by every job that doesn't pick its own agent.</p>
           <div role="radiogroup" aria-label="Default agent" className="grid gap-2 sm:grid-cols-3">
             {ids.map((id) => {
-              const checked = settings.defaultAgent === id;
+              const checked = settingsAgentOf(settings.defaultAgent) === id;
               const agent = infoOf(id) ?? { label: agentLabel(id), executable: null, unsaved: true };
               return (
                 <button
@@ -93,7 +94,7 @@ function SettingsForm({ initial }: { initial: Settings }) {
                   type="button"
                   role="radio"
                   aria-checked={checked}
-                  onClick={() => update({ defaultAgent: id })}
+                  onClick={() => !checked && update({ defaultAgent: id })}
                   className={`grid gap-1 rounded-[12px] border px-4 py-3 text-left transition-colors duration-150 ${
                     checked ? "border-amber/60 bg-amber/10" : "border-steel/50 bg-inkwell/40 hover:bg-channel"
                   }`}
@@ -115,6 +116,15 @@ function SettingsForm({ initial }: { initial: Settings }) {
               );
             })}
           </div>
+          {settingsAgentOf(settings.defaultAgent) === "pi" && (
+            <label className="flex flex-wrap items-center gap-2 text-[12px] text-fog">
+              Pi model
+              <PiModelSelect
+                value={piModelOf(settings.defaultAgent)}
+                onChange={(alias) => update({ defaultAgent: alias ? `pi:${alias}` : "pi" })}
+              />
+            </label>
+          )}
         </fieldset>
 
         <fieldset className="grid gap-4">
@@ -169,17 +179,17 @@ function SettingsForm({ initial }: { initial: Settings }) {
           <div className="grid gap-2 rounded-[12px] border border-steel/30 bg-inkwell/40 p-4">
             <div className="text-[13px] font-semibold">Add an agent</div>
             <p className="text-[12px] leading-snug text-fog">
-              Another way to start an agent, such as a Pi launcher with its own model:{" "}
-              <code className="font-mono text-bone">pi-claude -p {"{prompt}"}</code> or{" "}
-              <code className="font-mono text-bone">pi --model openai/gpt-6 -p {"{prompt}"}</code>. Jobs and chats can pick it by name. Commands that
-              run <code className="font-mono text-bone">pi</code> or a <code className="font-mono text-bone">pi-…</code> launcher (which passes
-              its arguments on to Pi) keep one Pi session per item and chat.
+              Another way to start an agent, such as Pi with options of its own:{" "}
+              <code className="font-mono text-bone">pi --model openai/gpt-6 -p {"{prompt}"}</code>. Pi's model aliases (
+              <code className="font-mono text-bone">pi models</code>) need no entry here: jobs and chats pick them under Pi. Jobs and chats can pick
+              an added agent by name. Commands that run <code className="font-mono text-bone">pi</code> or a{" "}
+              <code className="font-mono text-bone">pi-…</code> launcher (which passes its arguments on to Pi) keep one Pi session per item and chat.
             </p>
             <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)_auto]">
               <input
                 className="field font-mono text-[13px]"
                 aria-label="New agent's name"
-                placeholder="pi-claude"
+                placeholder="pi-fast"
                 value={newId}
                 spellCheck={false}
                 autoCapitalize="off"
@@ -188,7 +198,7 @@ function SettingsForm({ initial }: { initial: Settings }) {
               <input
                 className="field font-mono text-[13px]"
                 aria-label="New agent's command"
-                placeholder={`${addId || "pi-claude"} -p {prompt}`}
+                placeholder={`${addId || "pi-fast"} -p {prompt}`}
                 value={newCommand}
                 spellCheck={false}
                 autoCapitalize="off"

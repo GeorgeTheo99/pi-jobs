@@ -67,8 +67,16 @@ export const isReleaseMode = (mode: RunMode) => mode === "ship" || mode === "rel
 export type RunStatus = "awaiting_approval" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "timed_out";
 
 const BUILTIN_LABELS: Record<string, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
-/** A built-in agent's label, or an added agent's name. */
-export const agentLabel = (id: AgentId): string => (Object.hasOwn(BUILTIN_LABELS, id) ? BUILTIN_LABELS[id]! : id);
+/** The model alias of a "pi:<alias>" agent (Pi on one of its launcher's models), or null. */
+export const piModelOf = (id: AgentId): string | null => /^pi:([a-z0-9][a-z0-9._-]{0,63})$/.exec(id)?.[1] ?? null;
+/** The agent in Settings an agent runs as: "pi" for "pi:<alias>", otherwise itself. */
+export const settingsAgentOf = (id: AgentId): AgentId => (piModelOf(id) ? "pi" : id);
+/** A built-in agent's label, Pi with its model, or an added agent's name. */
+export const agentLabel = (id: AgentId): string => {
+  const model = piModelOf(id);
+  if (model) return `Pi · ${model}`;
+  return Object.hasOwn(BUILTIN_LABELS, id) ? BUILTIN_LABELS[id]! : id;
+};
 export const TRIGGER_LABELS: Record<Trigger, string> = {
   manual: "Manual",
   schedule: "Schedule",
@@ -285,6 +293,23 @@ export interface Settings {
   agentInfo: { id: AgentId; label: string; builtin: boolean; preset: string | null; executable: string | null; sessions: boolean }[];
 }
 
+/** One of Pi's model aliases on the server (`pi models`), runnable as the agent "pi:<alias>". */
+export interface PiModel {
+  alias: string;
+  aliases: string[];
+  name: string;
+  /** "local", "cloud", "direct", or "bridge" for the Claude bridge. */
+  group: string;
+  /** The model plain Pi uses. */
+  default: boolean;
+}
+
+export interface PiModelList {
+  models: PiModel[];
+  /** Why there is no list (Pi without pi-shared's launcher, say); plain Pi still runs. */
+  error: string | null;
+}
+
 export interface LogChunk {
   text: string;
   offset: number;
@@ -413,6 +438,8 @@ export const api = {
   decideAction: (id: number, turnId: number, index: number, decision: "apply" | "dismiss") =>
     request<{ action: ChatAction; secret?: string }>("POST", `/api/chats/${id}/turns/${turnId}/actions/${index}`, { decision }),
   settings: () => request<Settings>("GET", "/api/settings"),
+  /** Pi's model aliases, live from the server's launcher. */
+  piModels: () => request<PiModelList>("GET", "/api/pi-models"),
   saveSettings: (settings: Omit<Settings, "agentInfo">) => request<Settings>("PUT", "/api/settings", settings),
   /** Sends a test notification with the saved notify command. */
   testNotification: () => request<{ ok: boolean; error: string | null }>("POST", "/api/settings/notify-test"),

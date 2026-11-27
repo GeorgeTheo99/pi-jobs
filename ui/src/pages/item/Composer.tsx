@@ -2,7 +2,7 @@ import { SendHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ErrorNote } from "@/components/ui";
-import { ApiError, api, type Job, type Run } from "@/lib/api";
+import { ApiError, api, settingsAgentOf, type Job, type Run } from "@/lib/api";
 import type { Item } from "@/lib/items";
 import { splitReply } from "@/lib/report";
 import { usePoll } from "@/lib/usePoll";
@@ -128,7 +128,7 @@ export function Composer({ item, job, busy, onStarted }: { item: Item; job: Job 
   const fieldError = error instanceof ApiError ? error.fields.instructions : undefined;
   // Whether the agent continues one conversation per item (Pi and pi-… launchers), per Settings.
   const { data: settings } = usePoll(api.settings, null);
-  const remembers = Boolean(job && settings?.agentInfo.find((agent) => agent.id === job.effectiveAgent)?.sessions);
+  const remembers = Boolean(job && settings?.agentInfo.find((agent) => agent.id === settingsAgentOf(job.effectiveAgent))?.sessions);
 
   return (
     <section aria-label="Next message" className="grid gap-3 rounded-[12px] border border-steel/30 bg-inkwell/40 p-4">

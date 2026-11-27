@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, type AgentId } from "./agents.ts";
+import { AGENT_ID_PATTERN, AGENT_PRESETS, BUILTIN_AGENT_IDS, agentCommand, type AgentId } from "./agents.ts";
 
 export type Trigger = "manual" | "schedule" | "webhook" | "watch";
 /**
@@ -979,7 +979,7 @@ export class Store {
       if (!Object.hasOwn(agents, id) && AGENT_ID_PATTERN.test(id) && typeof entry?.command === "string") agents[id] = { command: entry.command };
     }
     return {
-      defaultAgent: typeof saved.defaultAgent === "string" && Object.hasOwn(agents, saved.defaultAgent) ? saved.defaultAgent : DEFAULT_SETTINGS.defaultAgent,
+      defaultAgent: typeof saved.defaultAgent === "string" && agentCommand(agents, saved.defaultAgent) !== null ? saved.defaultAgent : DEFAULT_SETTINGS.defaultAgent,
       agents,
       maxConcurrent: saved.maxConcurrent ?? DEFAULT_SETTINGS.maxConcurrent,
       notifyCommand: saved.notifyCommand ?? null,

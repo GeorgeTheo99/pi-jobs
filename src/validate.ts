@@ -1,12 +1,25 @@
 import { stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { AGENT_ID_PATTERN, BUILTIN_AGENT_IDS, buildArgv, isBuiltinAgent } from "./agents.ts";
+import { AGENT_ID_PATTERN, BUILTIN_AGENT_IDS, agentCommand, buildArgv, isBuiltinAgent, piModelOf } from "./agents.ts";
+import type { PiModels } from "./models.ts";
 import { isGitRepo, resolvesToCommit } from "./git.ts";
 import { HttpError } from "./http.ts";
 import { cronError } from "./scheduler.ts";
 import { jobBody } from "./actions.ts";
 import { DEFAULT_RETRIES, MAX_CONCURRENT, MAX_RETRIES, type Job, type JobInput, type Settings } from "./store.ts";
+
+/**
+ * Why an agent can't be chosen, or null: it must be in Settings, or Pi on a model alias its launcher
+ * lists now ("pi:<alias>"). Without the list (no piModels), a "pi:<alias>" agent is checked when it runs.
+ */
+export async function agentError(agent: unknown, settings: Settings, piModels?: PiModels): Promise<string | null> {
+  if (typeof agent !== "string" || agentCommand(settings.agents, agent) === null) {
+    return `Choose one of ${Object.keys(settings.agents).join(", ")}, "pi:<model alias>", or the default`;
+  }
+  const model = piModelOf(agent);
+  return model === null || !piModels ? null : piModels.unavailable(model);
+}
 
 /** The longest instructions, messages and release instructions the API takes. */
 export const MAX_INSTRUCTIONS = 20_000;
@@ -15,7 +28,7 @@ export const MAX_INSTRUCTIONS = 20_000;
  * Builds a job from a request body. For an update, every field the body leaves out keeps the job's
  * value, so PUT and PATCH both change only what they send.
  */
-export async function validateJob(request: Record<string, unknown>, settings: Settings, existing: Job | null = null): Promise<JobInput> {
+export async function validateJob(request: Record<string, unknown>, settings: Settings, existing: Job | null = null, piModels?: PiModels): Promise<JobInput> {
   const sent = Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined));
   const body: Record<string, unknown> = existing ? { ...jobBody(existing), ...sent } : sent;
   const fields: Record<string, string> = {};
@@ -59,9 +72,11 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
   }
 
   const agent = isCommand ? null : (body.agent ?? null);
-  // A job keeps an agent that was since removed from Settings until it is changed; its runs say so.
-  if (agent !== null && (typeof agent !== "string" || (!Object.hasOwn(settings.agents, agent) && agent !== existing?.agent))) {
-    fields.agent = `Choose one of ${Object.keys(settings.agents).join(", ")}, or the default`;
+  // A job keeps an agent that was since removed from Settings (or a Pi model alias since dropped) until
+  // it is changed; its runs say so.
+  if (agent !== null && agent !== existing?.agent) {
+    const error = await agentError(agent, settings, piModels);
+    if (error) fields.agent = error;
   }
 
   const schedule = text("schedule") || null;
@@ -172,7 +187,7 @@ export function validateSettings(body: Record<string, unknown>, current: Setting
       fields[`agents.${job.agent}`] = `Job #${job.id} "${job.name}" uses this agent; change its agent first`;
     }
   }
-  if (typeof body.defaultAgent !== "string" || !Object.hasOwn(agents, body.defaultAgent)) fields.defaultAgent = "Choose one of the agents";
+  if (typeof body.defaultAgent !== "string" || agentCommand(agents, body.defaultAgent) === null) fields.defaultAgent = "Choose one of the agents, or Pi on one of its models";
   const maxConcurrent = Number(body.maxConcurrent);
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > MAX_CONCURRENT) {
     fields.maxConcurrent = `Use a whole number from 1 to ${MAX_CONCURRENT}`;

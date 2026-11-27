@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,4 +73,29 @@ export function waitForFinish(runner: Runner, runId: number): Promise<Run> {
     };
     runner.on("finished", onFinished);
   });
+}
+
+/** A fake of pi-shared's `pi` launcher: lists one alias, "fast", and records how each run called it. */
+export function fakePiLauncher(root: string): { pi: string; calls: string } {
+  const bin = path.join(root, "bin");
+  const calls = path.join(root, "pi-calls.txt");
+  mkdirSync(bin, { recursive: true });
+  const listed = JSON.stringify({ version: 1, models: [{ alias: "fast", aliases: [], name: "fast-model", group: "cloud", default: false }] });
+  writeFileSync(
+    path.join(bin, "pi"),
+    [
+      "#!/bin/sh",
+      'case "$1 $2" in',
+      `  "models --help") echo "Usage: pi models [--json]"; exit 0;;`,
+      `  "models --json") echo '${listed}'; exit 0;;`,
+      `  "claude --version") exit 1;;`,
+      "esac",
+      `echo "$1 $2" >> '${calls}'`,
+      "shift; [ \"$1\" = --session-id ] && shift 2; [ \"$1\" = -p ] && shift",
+      `exec '${process.execPath}' '${FAKE_AGENT}' edit "$1"`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(path.join(bin, "pi"), 0o755);
+  return { pi: path.join(bin, "pi"), calls };
 }

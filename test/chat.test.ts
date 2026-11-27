@@ -246,7 +246,7 @@ test("with Pi, a chat's turns continue one session and are told what became of t
   mkdirSync(bin);
   writeFileSync(
     path.join(bin, "pi"),
-    `#!/bin/sh\nif [ "$1" = "--session-id" ]; then echo "$2 $(pwd) $PI_JOBS_RUN_ID" >> '${sessions}'; shift 2; fi\nexec '${process.execPath}' '${FAKE_CHAT}' "$@"\n`,
+    `#!/bin/sh\ncase "$1" in models|claude) exit 1;; esac\nmode=$1; shift\nif [ "$1" = "--session-id" ]; then echo "$2 $(pwd) $PI_JOBS_RUN_ID" >> '${sessions}'; shift 2; fi\nexec '${process.execPath}' '${FAKE_CHAT}' "$mode" "$@"\n`,
   );
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = app.store.getSettings();

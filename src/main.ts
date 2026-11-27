@@ -85,7 +85,7 @@ for (const job of store.listJobs()) {
 }
 runner.pump();
 
-const chats = new ChatRunner({ store, stateDir: config.stateDir, nextRun: (jobId) => scheduler.nextRun(jobId) });
+const chats = new ChatRunner({ store, stateDir: config.stateDir, nextRun: (jobId) => scheduler.nextRun(jobId), piModels: runner.piModels });
 const handle = createApp({ config, store, runner, scheduler, chats, notifier });
 const server = createServer((req, res) => void handle(req, res));
 server.listen(config.port, config.host, () => {

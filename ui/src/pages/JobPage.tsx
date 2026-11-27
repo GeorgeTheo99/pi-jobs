@@ -2,10 +2,13 @@ import { MessagesSquare, Play, RadioTower, RefreshCw, Trash2 } from "lucide-reac
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ItemList } from "@/components/Items";
+import { PiModelSelect } from "@/components/PiModelSelect";
 import { CopyButton, ErrorNote, Field, PageHeader, Skeleton, Switch } from "@/components/ui";
 import {
   agentLabel,
   ApiError,
+  piModelOf,
+  settingsAgentOf,
   api,
   apiUrl,
   jobToDraft,
@@ -123,9 +126,11 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
 
   const isCommand = draft.kind === "command";
   const defaultAgent = settings.data?.defaultAgent;
-  // Settings' agents (built-ins, then added Pi launchers and the like), plus the job's own if it was since removed.
+  // Settings' agents (built-ins, then added launchers and the like), plus the job's own if it was since removed.
+  // Pi on one of its models ("pi:<alias>") is Pi here, with the model picked below.
   const agentIds = Object.keys(settings.data?.agents ?? { pi: null, claude: null, codex: null });
-  if (draft.agent && !agentIds.includes(draft.agent)) agentIds.push(draft.agent);
+  const chosen = draft.agent === null ? null : settingsAgentOf(draft.agent);
+  if (chosen && !agentIds.includes(chosen)) agentIds.push(chosen);
 
   return (
     <>
@@ -294,11 +299,17 @@ function JobEditor({ job, onSaved }: { job: Job | null; onSaved: (job: Job) => v
                 Default{defaultAgent ? ` (${agentLabel(defaultAgent)})` : ""}
               </SegmentButton>
               {agentIds.map((agent: AgentId) => (
-                <SegmentButton key={agent} checked={draft.agent === agent} onClick={() => set("agent", agent)}>
+                <SegmentButton key={agent} checked={chosen === agent} onClick={() => chosen !== agent && set("agent", agent)}>
                   {agentLabel(agent)}
                 </SegmentButton>
               ))}
             </div>
+            {chosen === "pi" && (
+              <label className="flex flex-wrap items-center gap-2 text-[12px] text-fog">
+                Model
+                <PiModelSelect value={piModelOf(draft.agent!)} onChange={(alias) => set("agent", alias ? `pi:${alias}` : "pi")} />
+              </label>
+            )}
             {fields.agent && <p className="text-[12px] text-red">{fields.agent}</p>}
           </Section>
           )}

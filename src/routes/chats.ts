@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { applyAction } from "../actions.ts";
 import type { Chat } from "../store.ts";
 import { HttpError, readChunk, readJson } from "../http.ts";
-import { MAX_INSTRUCTIONS } from "../validate.ts";
+import { MAX_INSTRUCTIONS, agentError } from "../validate.ts";
 import type { AppContext, Route } from "./context.ts";
 
 export function chatRoutes(ctx: AppContext): Route[] {
-  const { store, chats, findJob } = ctx;
+  const { store, chats, runner, findJob } = ctx;
   return [
     ["GET", /^\/api\/chats$/, async () => store.listChats().map((chat) => ({ ...chat, busy: chats.isBusy(chat.id), lastTurn: store.chatTurns(chat.id).at(-1) ?? null }))],
     [
@@ -20,10 +20,11 @@ export function chatRoutes(ctx: AppContext): Route[] {
         if (body.runId != null && runId === null) throw new HttpError(404, "Run not found");
         const settings = store.getSettings();
         const agent = body.agent == null ? settings.defaultAgent : body.agent;
-        if (typeof agent !== "string" || !Object.hasOwn(settings.agents, agent)) throw new HttpError(400, "Fix the highlighted fields", { agent: "Unknown agent" });
+        const agentProblem = await agentError(agent, settings, runner.piModels);
+        if (agentProblem) throw new HttpError(400, "Fix the highlighted fields", { agent: agentProblem });
         const line = message.split("\n")[0]!.trim();
         const title = line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line;
-        const chat = store.createChat({ title, jobId, runId, agent, sessionId: randomUUID() });
+        const chat = store.createChat({ title, jobId, runId, agent: agent as string, sessionId: randomUUID() });
         return sendMessage(chat, message);
       },
     ],

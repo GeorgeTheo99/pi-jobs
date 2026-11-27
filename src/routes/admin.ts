@@ -3,7 +3,7 @@ import { cronError, nextRuns } from "../scheduler.ts";
 import { resolveCheckout } from "../repos.ts";
 import { HttpError, readJson } from "../http.ts";
 import { TOKEN_PATTERN, TOKEN_RULE } from "../store.ts";
-import { validateSettings } from "../validate.ts";
+import { agentError, validateSettings } from "../validate.ts";
 import type { AppContext, Route } from "./context.ts";
 
 /** Bumped on incompatible API changes; clients check it through /api/health. */
@@ -72,11 +72,19 @@ export function adminRoutes(ctx: AppContext): Route[] {
       },
     ],
     ["GET", /^\/api\/settings$/, async () => settingsView(store.getSettings())],
+    // Pi's model aliases on this server, live from its launcher: jobs and chats run them as "pi:<alias>".
+    ["GET", /^\/api\/pi-models$/, async () => runner.piModels.list()],
     [
       "PUT",
       /^\/api\/settings$/,
       async (req) => {
-        const saved = store.saveSettings(validateSettings(await readJson(req), store.getSettings(), store.listJobs()));
+        const current = store.getSettings();
+        const settings = validateSettings(await readJson(req), current, store.listJobs());
+        if (settings.defaultAgent !== current.defaultAgent) {
+          const error = await agentError(settings.defaultAgent, settings, runner.piModels);
+          if (error) throw new HttpError(400, "Fix the highlighted fields", { defaultAgent: error });
+        }
+        const saved = store.saveSettings(settings);
         runner.pump();
         return settingsView(saved);
       },

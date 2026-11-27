@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { itemView, runView } from "../src/items.ts";
 import { ReleaseRefusedError } from "../src/runner.ts";
 import type { Run } from "../src/store.ts";
-import { FAKE_AGENT as FAKE, git, setup, waitForFinish } from "./helpers.ts";
+import { FAKE_AGENT as FAKE, fakePiLauncher, git, setup, waitForFinish } from "./helpers.ts";
 
 test("a successful run commits the agent's changes to a branch and removes the worktree", async (t) => {
   const ctx = setup();
@@ -806,7 +806,8 @@ test("an item's runs share one Pi session, resumed by id in the same directory",
   execFileSync("mkdir", ["-p", bin]);
   writeFileSync(
     path.join(bin, "pi"),
-    `#!/bin/sh\nif [ "$1" = "--session-id" ]; then echo "$2 $(pwd)" >> '${sessions}'; shift 2; fi\nexec '${process.execPath}' '${FAKE}' "$@"\n`,
+    // Like Pi's launcher with a model alias: the session comes after the first word (here the fake's mode).
+    `#!/bin/sh\nmode=$1; shift\nif [ "$1" = "--session-id" ]; then echo "$2 $(pwd)" >> '${sessions}'; shift 2; fi\nexec '${process.execPath}' '${FAKE}' "$mode" "$@"\n`,
   );
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = ctx.store.getSettings();
@@ -898,7 +899,7 @@ test("a retry starts a new Pi session instead of resuming the failed attempt's",
   t.after(ctx.cleanup);
   const bin = path.join(ctx.root, "bin");
   execFileSync("mkdir", ["-p", bin]);
-  writeFileSync(path.join(bin, "pi"), `#!/bin/sh\n[ "$1" = "--session-id" ] && shift 2\nexec '${process.execPath}' '${FAKE}' "$@"\n`);
+  writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nmode=$1; shift\n[ "$1" = "--session-id" ] && shift 2\nexec '${process.execPath}' '${FAKE}' "$mode" "$@"\n`);
   chmodSync(path.join(bin, "pi"), 0o755);
   const settings = ctx.store.getSettings();
   settings.agents.pi!.command = `${path.join(bin, "pi")} fail {prompt}`;
@@ -1373,4 +1374,39 @@ test("a failing command job is retried; a timed-out one is stopped", async (t) =
   ctx.runner.cancel(started.run.id);
   const canceled = await waitForFinish(ctx.runner, started.run.id);
   assert.equal(canceled.status, "canceled");
+});
+
+test('a "pi:<alias>" agent runs Pi on that alias, with its session after the alias', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const { pi, calls } = fakePiLauncher(ctx.root);
+  const settings = ctx.store.getSettings();
+  settings.agents.pi!.command = `${pi} -p {prompt}`;
+  ctx.store.saveSettings(settings);
+
+  const job = ctx.store.createJob(ctx.jobInput({ agent: "pi:fast" }), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const run = await waitForFinish(ctx.runner, first.run.id);
+  assert.equal(run.status, "succeeded", run.error ?? "");
+  assert.equal(run.agent, "pi:fast");
+  assert.equal(readFileSync(calls, "utf8"), "fast --session-id\n", "the alias first, as Pi's launcher reads it");
+  assert.match(git(ctx.repo, "show", `${run.branch}:agent-output.txt`), /Do the thing/);
+});
+
+test('a "pi:<alias>" agent whose alias is gone fails before running, instead of sending the alias as the prompt', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const { pi, calls } = fakePiLauncher(ctx.root);
+  const settings = ctx.store.getSettings();
+  settings.agents.pi!.command = `${pi} -p {prompt}`;
+  ctx.store.saveSettings(settings);
+
+  const job = ctx.store.createJob(ctx.jobInput({ agent: "pi:gone" }), null);
+  const first = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in first);
+  const run = await waitForFinish(ctx.runner, first.run.id);
+  assert.equal(run.status, "failed");
+  assert.match(run.error ?? "", /Pi has no model alias "gone"/);
+  assert.ok(!existsSync(calls), "Pi never ran");
 });

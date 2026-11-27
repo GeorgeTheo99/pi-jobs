@@ -343,18 +343,30 @@ A failing command is logged; it never holds up a run.
 ## Agents
 
 Settings holds one headless command line per agent. `{prompt}` becomes a single argument (never
-passed through a shell); without it the prompt is appended. Besides the three built-ins, **Add an
-agent** names another command line, typically a Pi launcher with its own model or profile:
+passed through a shell); without it the prompt is appended.
+
+**Pi's models.** With [pi-shared](https://github.com/GeorgeTheo99/pi-shared)'s `pi` launcher, every
+model alias it lists (`pi models`, plus the Claude bridge `pi claude`) is also an agent,
+`pi:<alias>`: Pi's command with the alias first, such as `pi claude -p {prompt}`. The list is read
+live from the server's `pi` (`GET /api/pi-models`, refreshed every 30 seconds), so new aliases need
+no setup; pick them under Pi for a job, a chat or the default. An alias is checked when it is chosen
+and again when a run starts: a run whose alias is gone fails at once, since Pi's launcher would
+otherwise read an unknown alias as the start of the prompt. With stock Pi, which has no aliases,
+pi-jobs never asks it for models.
+
+Besides the three built-ins, **Add an agent** names another command line, such as Pi with options
+of its own:
 
 | Name | Command |
 |---|---|
-| `pi-claude` | `pi-claude -p {prompt}` (a launcher script ending in `exec pi --model … "$@"`) |
 | `pi-gpt` | `pi --model openai/gpt-6 -p {prompt}` |
+| `pi-work` | `pi-work -p {prompt}` (a launcher script that sets `PI_CODING_AGENT_DIR` and ends in `exec pi "$@"`) |
 
 Jobs, chats and the default pick agents by name; an agent a job uses can't be removed. A run takes
 the job's agent when it starts, so changing it applies to runs still waiting for approval. Commands
 whose program is `pi` or `pi-…` count as Pi: pi-jobs adds `--session-id <id>` right after the
-program, so a launcher must pass its arguments on to Pi.
+program, or after `pi`'s first argument when that is a word such as a model alias (which Pi's
+launcher reads only first), so a launcher must pass its arguments on to Pi.
 
 | Agent | Preset |
 |---|---|

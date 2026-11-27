@@ -4,7 +4,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ACTIONS, actionHelp, planAction } from "./actions.ts";
-import { buildArgv, supportsSessions, withSession } from "./agents.ts";
+import { agentCommand, buildArgv, piModelOf, supportsSessions, withSession } from "./agents.ts";
+import { PiModels, type PiModelList } from "./models.ts";
 import { runInGroup, signalGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { PI_NEW_SESSION } from "./prompt.ts";
 import type { Chat, ChatAction, ChatTurn, Job, Run, Store } from "./store.ts";
@@ -37,6 +38,8 @@ export interface ChatRunnerOptions {
   turnTimeoutMs?: number;
   /** When a job's schedule next fires, for the state the agent sees. */
   nextRun?: (jobId: number) => string | null;
+  /** Pi's model aliases, for "pi:<alias>" agents; the runner's, so both share one cache. */
+  piModels?: PiModels;
 }
 
 /** The reply without its actions block, and what the block proposed (null when there was none). */
@@ -122,10 +125,12 @@ function runState(run: Run) {
 }
 
 /** What pi-jobs looks like now, for the agent: settings, jobs, tokens' names, recent runs, and the chat's job or item in full. */
-export function buildState(store: Store, chat: Chat, logDir: string, nextRun?: ChatRunnerOptions["nextRun"]): string {
+export function buildState(store: Store, chat: Chat, logDir: string, nextRun?: ChatRunnerOptions["nextRun"], piModels?: PiModelList): string {
   const settings = store.getSettings();
   const state: Record<string, unknown> = {
     settings: { defaultAgent: settings.defaultAgent, maxConcurrent: settings.maxConcurrent, agents: settings.agents },
+    // Any of these also runs as an agent, "pi:<alias>": Pi on that model.
+    ...(piModels ? { piModelAliases: piModels.error ? `unavailable: ${piModels.error}` : piModels.models.map((m) => m.alias) } : {}),
     jobs: store.listJobs().map((job) => jobState(job, store, nextRun, job.id === chat.jobId)),
     apiTokens: store.listTokens().map((token) => ({ name: token.name, lastUsedAt: token.lastUsedAt })),
     recentRuns: store.listRuns({ limit: RECENT_RUNS }).map(runState),
@@ -211,6 +216,7 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
   private readonly killGraceMs: number;
   private readonly turnTimeoutMs: number;
   private readonly nextRun?: ChatRunnerOptions["nextRun"];
+  private readonly piModels: PiModels;
   private readonly active = new Map<number, ActiveTurn>();
   private readonly executions = new Set<Promise<void>>();
   readonly dir: string;
@@ -223,6 +229,7 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
     this.killGraceMs = options.killGraceMs ?? 10_000;
     this.turnTimeoutMs = options.turnTimeoutMs ?? TURN_TIMEOUT_MS;
     this.nextRun = options.nextRun;
+    this.piModels = options.piModels ?? new PiModels({ env: this.env, piCommand: () => this.store.getSettings().agents.pi!.command });
     this.dir = path.join(options.stateDir, "chats");
     this.logDir = path.join(options.stateDir, "runs");
     mkdirSync(this.dir, { recursive: true });
@@ -290,12 +297,21 @@ export class ChatRunner extends EventEmitter<{ finished: [ChatTurn] }> {
       const cwd = this.chatDir(chat.id);
       mkdirSync(cwd, { recursive: true });
       const settings = this.store.getSettings();
-      // A chat whose agent was since removed from Settings carries on with the default one.
-      const { command } = settings.agents[Object.hasOwn(settings.agents, chat.agent) ? chat.agent : settings.defaultAgent]!;
+      // A chat whose agent was since removed from Settings, or whose Pi model alias is gone, carries on with
+      // the default one, or plain Pi: an unknown alias would reach Pi as the start of the prompt.
+      let command = settings.agents.pi!.command;
+      for (const agent of [chat.agent, settings.defaultAgent]) {
+        const model = piModelOf(agent);
+        const candidate = agentCommand(settings.agents, agent);
+        if (candidate !== null && (model === null || (await this.piModels.unavailable(model)) === null)) {
+          command = candidate;
+          break;
+        }
+      }
       const earlier = this.store.chatTurns(chat.id).filter((t) => t.id < turn.id);
       const sessionId = supportsSessions(command) ? chat.sessionId : null;
       const resumed = sessionId !== null && earlier.some((t) => t.exitCode !== null);
-      const state = buildState(this.store, chat, this.logDir, this.nextRun);
+      const state = buildState(this.store, chat, this.logDir, this.nextRun, await this.piModels.list());
       const prompt = buildChatPrompt({ chat, turn, earlier, state, resumed });
       const argv = withSession(buildArgv(command, prompt), sessionId);
       const { exitCode, stdout } = await this.spawnAgent(turn.id, active, argv, cwd);

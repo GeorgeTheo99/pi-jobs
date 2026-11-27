@@ -98,6 +98,7 @@ export function ChatsPage() {
   const runId = params.get("runId") ? Number(params.get("runId")) : undefined;
   const { data: chats, error, refresh } = usePoll(api.chats, (latest) => (latest?.some((c) => c.busy) ? 3000 : 10_000));
   const { data: settings } = usePoll(api.settings, null);
+  const { data: piModels } = usePoll(api.piModels, null);
   const [agent, setAgent] = useState<string>("");
   useRefreshOnChange(refresh);
   const navigate = useNavigate();
@@ -116,7 +117,7 @@ export function ChatsPage() {
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>{(jobId !== undefined || runId !== undefined) && <About jobId={jobId ?? null} runId={runId ?? null} />}</div>
-            {settings && Object.keys(settings.agents).length > 1 && (
+            {settings && (Object.keys(settings.agents).length > 1 || (piModels?.models.length ?? 0) > 0) && (
               <label className="flex items-center gap-2 text-[12px] text-fog">
                 Agent
                 <select className="field w-auto py-1 text-[13px]" value={agent} onChange={(e) => setAgent(e.target.value)}>
@@ -126,6 +127,15 @@ export function ChatsPage() {
                       {agentLabel(id)}
                     </option>
                   ))}
+                  {(piModels?.models.length ?? 0) > 0 && (
+                    <optgroup label="Pi on a model">
+                      {piModels!.models.map((m) => (
+                        <option key={m.alias} value={`pi:${m.alias}`}>
+                          {agentLabel(`pi:${m.alias}`)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
             )}

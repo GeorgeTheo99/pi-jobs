@@ -3,8 +3,9 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { readFile, rm, rmdir } from "node:fs/promises";
-import { buildArgv, supportsSessions, withSession } from "./agents.ts";
+import { agentCommand, buildArgv, piModelOf, supportsSessions, withSession } from "./agents.ts";
 import { RepoState } from "./changes.ts";
+import { PiModels } from "./models.ts";
 import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolvesToCommit } from "./git.ts";
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
 import { agentOutput, buildPrompt, releaseOutcome, stillToShip, type PreviousRun } from "./prompt.ts";
@@ -55,6 +56,8 @@ export interface RunnerOptions {
   env?: NodeJS.ProcessEnv;
   killGraceMs?: number;
   retryDelayMs?: number;
+  /** Pi's model aliases, for "pi:<alias>" agents; read from the pi agent's launcher by default. */
+  piModels?: PiModels;
 }
 
 export function slugify(name: string): string {
@@ -94,11 +97,14 @@ export class Runner extends EventEmitter<RunnerEvents> {
   readonly worktreeDir: string;
   /** What runs changed and which are merged, from git. */
   readonly repos: RepoState;
+  /** Pi's model aliases on this server, shared with chats and the API. */
+  readonly piModels: PiModels;
 
   constructor(options: RunnerOptions) {
     super();
     this.store = options.store;
     this.env = withoutSessionEnv(options.env ?? process.env);
+    this.piModels = options.piModels ?? new PiModels({ env: this.env, piCommand: () => this.store.getSettings().agents.pi!.command });
     this.repos = new RepoState(this.store);
     this.killGraceMs = options.killGraceMs ?? 10_000;
     this.retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
@@ -543,7 +549,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       const dir = path.join(this.worktreeDir, `job-${job.id}`, `item-${run.itemId}`);
       await this.freeWorktree(job, run.id, dir);
       // Before making a checkout: a run whose agent is gone fails at once.
-      const command = this.agentCommand(run.agent);
+      const command = await this.agentCommand(run.agent);
       worktree = dir;
       const previous = run.followUpOf === null ? null : await this.previousRun(run.followUpOf);
       const head = production ? await this.stagedHead(job, run) : previous ? await this.itemHead(job, previous.run) : null;
@@ -793,11 +799,17 @@ export class Runner extends EventEmitter<RunnerEvents> {
     this.finish(run.id, { status, error }, status === "timed_out" || (status === "failed" && active.stopReason !== "canceled"));
   }
 
-  /** The command line of a run's agent, from Settings. */
-  private agentCommand(agent: string): string {
-    const { agents } = this.store.getSettings();
-    if (!Object.hasOwn(agents, agent)) throw new AgentMissingError(`The agent "${agent}" is no longer in Settings; add it back or change the job's agent`);
-    return agents[agent]!.command;
+  /**
+   * The command line of a run's agent, from Settings. A "pi:<alias>" agent runs only while Pi's launcher
+   * has the alias: given an unknown one, it would take the alias as the start of the prompt instead.
+   */
+  private async agentCommand(agent: string): Promise<string> {
+    const command = agentCommand(this.store.getSettings().agents, agent);
+    if (command === null) throw new AgentMissingError(`The agent "${agent}" is no longer in Settings; add it back or change the job's agent`);
+    const model = piModelOf(agent);
+    const unavailable = model === null ? null : await this.piModels.unavailable(model);
+    if (unavailable) throw new AgentMissingError(`${unavailable}; change the job's agent`);
+    return command;
   }
 
   /**
