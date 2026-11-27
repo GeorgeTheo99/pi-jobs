@@ -172,7 +172,7 @@ after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_R
   `GET /api/runs/<id>/release-preview` for the facts). It needs no approval of its own and runs
   while the job is paused.
 - **Checked, not taken on the agent's word.** Agents often exit 0 after stopping at a failed step.
-  An agent's release succeeds only if its report doesn't end with "Not released", the item's result
+  An agent's release succeeds only if its report's verdict isn't "Not released", the item's result
   is on `origin/<base>` after a fetch (as the same commits, or as the same patches after a rebase),
   and the verify command passes. A release that failed after it pushed, or timed out after its
   result went out, stays in **Waiting for you** as failed and says it may have gone out. A released

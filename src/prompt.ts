@@ -2,6 +2,9 @@ import { RELEASE_MODES, type Job, type Run } from "./store.ts";
 
 const MAX_PAYLOAD_IN_PROMPT = 20_000;
 export const PAYLOAD_TOKEN = "{{payload}}";
+/** How a release's report gives its verdict, which `releaseOutcome` reads. */
+const VERDICT_LINE =
+  'Its first line is "Released" or "Not released" (with the reason); don\'t start any other line with those words (say "Still to ship" for what this release leaves out);';
 
 /** The run a follow-up continues, and what its agent printed. */
 export interface PreviousRun {
@@ -88,7 +91,7 @@ export function buildPrompt(
       `- This run promotes exactly that commit to production. Unlike the item's earlier runs, you may push, deploy and publish, as the instructions above say. Do not rebase, merge, amend or add commits: what goes out must be the commit that was verified on staging, so ${job.baseRef} on origin must end up containing it as a fast-forward. Fetch ${job.baseRef} first; if it has moved so that it is no longer an ancestor of that commit, stop and report "Not released": the owner releases the item to staging again.`,
       `- Never force-push ${job.baseRef} or rewrite its history, and never skip hooks or checks (no --no-verify). Stop at the first failed test, check or step and report it instead of working around it.`,
       "- Nobody is watching: do not ask questions. Leave other checkouts alone unless the repository's release process says otherwise.",
-      '- End with a short report. Its first line is "Released" or "Not released"; then what went out (the commit, where it is live) and how you checked it.',
+      `- End with a short report. ${VERDICT_LINE} then what went out (the commit, where it is live) and how you checked it.`,
     );
   } else if (release) {
     const where =
@@ -103,7 +106,7 @@ export function buildPrompt(
       run.stage === "staging"
         ? "- Commits you make here (a rebase, a version bump) are kept on this branch; the commit you leave checked out is what the owner promotes, so deploy that one to staging."
         : "- Commits you make here (a version bump, say) are kept on this branch.",
-      '- End with a short report. Its first line is "Released" or "Not released"; then what went out (commits, version, where it is live) and how you checked it.',
+      `- End with a short report. ${VERDICT_LINE} then what went out (commits, version, where it is live) and how you checked it.`,
     );
   } else {
     if (followUp) {
@@ -156,6 +159,12 @@ export function buildPrompt(
 }
 
 /**
+ * A "Not released" verdict: the words alone or followed by a reason ("Not released: tests failed"),
+ * not prose that starts the same way, like a caveat "Not released yet: the Mac package".
+ */
+const NOT_RELEASED = /^not released(?:$|\s*[:.,;!(–—-]|\s+because\b)/;
+
+/**
  * Why a release whose agent exited 0 didn't release, by its own report: its last "Released" or "Not
  * released" line (the report is at the end; earlier lines may be tool output). Null unless it says it
  * didn't; whether the release is out is then checked against git.
@@ -163,7 +172,7 @@ export function buildPrompt(
 export function releaseOutcome(report: string): string | null {
   for (const raw of report.split("\n").reverse()) {
     const line = raw.replace(/[*_`#>]/g, "").trim().toLowerCase();
-    if (/^not released\b/.test(line)) return "The agent reported that it did not release";
+    if (NOT_RELEASED.test(line)) return "The agent reported that it did not release";
     if (/^released\b/.test(line)) return null;
   }
   return null;

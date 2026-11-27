@@ -1238,6 +1238,14 @@ test("releaseOutcome reads the report's Released line", async () => {
   assert.match(releaseOutcome("Not released: tests failed") ?? "", /did not release/);
   assert.equal(releaseOutcome("I pushed it"), null, "git decides when the report says neither");
   assert.match(releaseOutcome("## Released 1.0 (from cat CHANGELOG.md)\n...\nNot released: tests failed") ?? "", /did not release/, "the report at the end wins");
+  assert.match(releaseOutcome("**Not released**\nstaging failed") ?? "", /did not release/);
+  assert.match(releaseOutcome("Not released — staging failed") ?? "", /did not release/);
+  assert.match(releaseOutcome("Not released because staging failed") ?? "", /did not release/);
+  assert.equal(
+    releaseOutcome("Released\n\n**What went out**\n- 49d6876\n\n**Not released yet:** the Mac package still has the old code."),
+    null,
+    "a caveat that starts like a verdict isn't one",
+  );
 });
 
 test("a run takes the job's agent when it starts, not when it was queued for approval", async (t) => {
