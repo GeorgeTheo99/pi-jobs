@@ -6,8 +6,10 @@ import { RELEASABLE_VERDICTS, explicitVerdict, parseVerdict, summaryHeadline, su
  * must have passed, and its report's "Verdict:" line must say implemented or fixed. A headline alone
  * isn't enough: the agent wrote it, after reading untrusted reports.
  */
-export function autoReleaseBlocker(job: Pick<Job, "checkCommand">, run: Pick<Run, "checkStatus" | "summary">): string | null {
+export function autoReleaseBlocker(job: Pick<Job, "checkCommand" | "verifyCommand">, run: Pick<Run, "checkStatus" | "summary">): string | null {
   if (!job.checkCommand || run.checkStatus !== "passed") return "its check didn't pass";
+  // Without one, nothing checks that the release reached the people it is for.
+  if (!job.verifyCommand) return "the job has no verify command";
   const verdict = explicitVerdict(run.summary);
   if (verdict === null) return "its report has no Verdict: line";
   if (!RELEASABLE_VERDICTS.includes(verdict)) return `its report's verdict is ${verdict.replace("_", " ")}`;
@@ -19,7 +21,7 @@ export function autoReleaseBlocker(job: Pick<Job, "checkCommand">, run: Pick<Run
  * (a support report's triage, the run that implements it, and its release). Its state says what it
  * needs next.
  */
-export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "merged" | "closed";
+export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "partial" | "merged" | "closed";
 
 /** States that wait on the owner: they head the Inbox and count in its badge. */
 export const WAITING_STATES: readonly ItemState[] = ["approval", "decision", "review", "staged", "failed"];
@@ -126,7 +128,11 @@ function stateOf(runs: ListedRun[], latestWork: ListedRun, verdict: Verdict, wit
   if (runs.some(isOpen)) return "running";
   // A promotion canceled before it started leaves the item on staging.
   if (latestWork.stage === "production" && latestWork.status === "canceled" && promotableStage(runs)) return "staged";
-  if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status === "succeeded") return latestWork.stage === "staging" ? "staged" : "released";
+  if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status === "succeeded") {
+    if (latestWork.stage === "staging") return "staged";
+    // Out, but not everywhere: its report or verify command named what is still to ship (a package, say).
+    return latestWork.stillToShip ? "partial" : "released";
+  }
   // A release that failed after it pushed (its verify command, a timeout) still needs the owner.
   if (RELEASE_MODES.includes(latestWork.mode) && latestWork.status !== "canceled") return "failed";
   if (withChanges?.merged) return "merged";

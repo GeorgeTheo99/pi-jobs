@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { readFile, rm, rmdir } from "node:fs/promises";
 import { buildArgv, supportsSessions, withSession } from "./agents.ts";
 import { RepoState } from "./changes.ts";
 import { NETWORK_TIMEOUT_MS, REMOTE, baseBranch, git, isFetchableBranch, resolvesToCommit } from "./git.ts";
 import { runInGroup, terminate, withoutSessionEnv, type ProcessHandle } from "./process.ts";
-import { agentOutput, buildPrompt, releaseOutcome, type PreviousRun } from "./prompt.ts";
+import { agentOutput, buildPrompt, releaseOutcome, stillToShip, type PreviousRun } from "./prompt.ts";
 import { autoReleaseBlocker, promotableStage } from "./items.ts";
 import { explicitVerdict } from "./report.ts";
 import { ACTIVE_STATUSES, INTERRUPTED, RELEASE_MODES, WAITING_STATUSES, type Job, type Run, type RunMode, type RunStatus, type Store, type Trigger } from "./store.ts";
@@ -561,6 +561,10 @@ export class Runner extends EventEmitter<RunnerEvents> {
         this.note(run.id, `Worktree ${worktree} on ${branch} from ${base.label} (${baseCommit.slice(0, 12)})`);
       }
 
+      // The verify command runs from the base branch as it was before the release, so the item's own
+      // changes (or a release that went wrong) can't change how its release is checked.
+      const trusted = release ? (await this.resolveBase(job, run.id)).commit : null;
+
       let exitCode: number | null = null;
       if (!active.stopReason) {
         const session = this.sessionFor(run, command);
@@ -612,6 +616,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       // step): its report mustn't say "Not released", the item's result must be on the base branch on
       // origin, and the job's verify command must pass.
       let releaseError: string | null = null;
+      let leftToShip: string[] = [];
       // A staging release can't be checked against the base branch (it doesn't go there): its report and
       // verify command decide. A promotion must have put exactly the staged commit on the base branch.
       if (release && exitCode === 0 && !active.stopReason) {
@@ -619,7 +624,11 @@ export class Runner extends EventEmitter<RunnerEvents> {
           releaseOutcome(this.readSummary(run.id)) ??
           (production && headCommit !== baseCommit ? "The promotion added commits that staging didn't verify" : null) ??
           (staging ? null : await this.releasedCheck(job, run.id, baseCommit, production));
-        if (!releaseError) releaseError = await this.verify(job, run, active, worktree, deadline, releaseEnv(job, run, production ? baseCommit : headCommit, branch));
+        if (!releaseError) {
+          const verified = await this.verify(job, run, active, trusted!, deadline, releaseEnv(job, run, production ? baseCommit : headCommit, branch));
+          releaseError = verified.error;
+          leftToShip = [...new Set([...stillToShip(this.readSummary(run.id)), ...verified.stillToShip])];
+        }
       } else if (release && !staging && active.stopReason === "timed_out" && (await this.releasedCheck(job, run.id, baseCommit, production)) === null) {
         // Cut off by its timeout after its result went out: the owner must check before releasing again.
         releaseError = `It timed out, but the item's result is on ${baseBranch(job.baseRef)}: it may have gone out. Check it before releasing again`;
@@ -676,6 +685,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
           commits,
           checkStatus,
           pushedTo,
+          stillToShip: status === "succeeded" && leftToShip.length > 0 ? leftToShip.join("\n") : null,
           error: active.stopReason === "interrupted" ? INTERRUPTED : (pushError ?? releaseError),
           ...(answered && { mode: "ask" as const }),
         },
@@ -714,6 +724,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
       const command = run.instructions ?? "";
       const dir = path.join(this.worktreeDir, `job-${job.id}`, `item-${run.itemId}`);
       await this.freeWorktree(job, run.id, dir);
+      const trusted = (await this.resolveBase(job, run.id)).commit;
       mkdirSync(path.dirname(dir), { recursive: true });
       await git(job.repoPath, ["worktree", "add", "--detach", dir, head.commit]);
       worktree = dir;
@@ -726,7 +737,11 @@ export class Runner extends EventEmitter<RunnerEvents> {
         this.store.updateRun(run.id, { exitCode });
         this.note(run.id, `Release script exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
       }
-      const verifyError = exitCode === 0 ? await this.verify(job, run, active, dir, deadline, releaseEnv(job, run, head.commit, head.branch)) : null;
+      // What the script released: the commit it left checked out, which a rebase or version bump moves.
+      const released = exitCode === 0 ? await git(dir, ["rev-parse", "HEAD"]) : head.commit;
+      const verified = exitCode === 0 ? await this.verify(job, run, active, trusted, deadline, releaseEnv(job, run, released, head.branch)) : null;
+      const verifyError = verified?.error ?? null;
+      const leftToShip = verified ? [...new Set([...stillToShip(this.readSummary(run.id)), ...verified.stillToShip])] : [];
       await this.removeWorktree(job, dir);
       worktree = null;
       const status: RunStatus = runStatus(active.stopReason, exitCode === 0 && !verifyError);
@@ -736,7 +751,7 @@ export class Runner extends EventEmitter<RunnerEvents> {
           : status !== "failed"
             ? null
             : (verifyError ?? `The release script exited with ${exitCode === null ? "a signal" : `code ${exitCode}`}`);
-      this.finish(run.id, { status, worktree: null, error });
+      this.finish(run.id, { status, worktree: null, error, stillToShip: status === "succeeded" && leftToShip.length > 0 ? leftToShip.join("\n") : null });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.note(run.id, `Error: ${message}`);
@@ -840,16 +855,40 @@ export class Runner extends EventEmitter<RunnerEvents> {
   }
 
   /**
-   * Runs the job's verify command after a release (its promote verify command after a promotion), in
-   * its checkout, with what was released in PI_JOBS_RELEASE_*; why it failed, or null.
+   * Runs the job's verify command after a release (its promote verify command after a promotion), with
+   * what was released in PI_JOBS_RELEASE_*, in a temporary checkout of `trusted`: the base branch as it
+   * was before the release, so the release can't change its own check. Why it failed (with the last line
+   * it printed), or null, and its "Still to ship:" lines.
    */
-  private async verify(job: Job, run: Run, active: ActiveRun, cwd: string, deadline: number, env: Record<string, string>): Promise<string | null> {
+  private async verify(
+    job: Job,
+    run: Run,
+    active: ActiveRun,
+    trusted: string,
+    deadline: number,
+    env: Record<string, string>,
+  ): Promise<{ error: string | null; stillToShip: string[] }> {
     const command = run.stage === "production" ? job.promoteVerifyCommand : job.verifyCommand;
-    if (!command || active.stopReason) return null;
-    this.note(run.id, `Running verify command: ${command}`);
-    const code = await this.runProcess(run.id, active, ["/bin/sh", "-c", command], cwd, deadline, env);
+    if (!command || active.stopReason) return { error: null, stillToShip: [] };
+    const dir = path.join(this.worktreeDir, `job-${job.id}`, `verify-${run.id}`);
+    await git(job.repoPath, ["worktree", "remove", "--force", dir]).catch(() => undefined);
+    if (existsSync(dir)) await rm(dir, { recursive: true, force: true });
+    mkdirSync(path.dirname(dir), { recursive: true });
+    await git(job.repoPath, ["worktree", "add", "--detach", dir, trusted]);
+    this.note(run.id, `Running verify command: ${command} (in a checkout of ${trusted.slice(0, 12)}, the base before the release)`);
+    const from = statSync(this.logPath(run.id)).size;
+    let code: number | null;
+    try {
+      code = await this.runProcess(run.id, active, ["/bin/sh", "-c", command], dir, deadline, env);
+    } finally {
+      await this.removeWorktree(job, dir).catch(() => undefined);
+    }
+    const output = readFileSync(this.logPath(run.id)).subarray(from).toString("utf8");
     this.note(run.id, `Verify command ${code === 0 ? "passed" : `failed${code === null ? "" : ` (code ${code})`}`}`);
-    return code === 0 ? null : `The verify command failed${code === null ? "" : ` with code ${code}`}`;
+    if (code === 0) return { error: null, stillToShip: stillToShip(output) };
+    const last = output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    const why = `The verify command failed${code === null ? "" : ` with code ${code}`}`;
+    return { error: last ? `${why}: ${last.slice(0, 300)}` : why, stillToShip: [] };
   }
 
   /** Commits on HEAD that the base branch on origin doesn't have (as last fetched or pushed), else since `baseCommit`. */

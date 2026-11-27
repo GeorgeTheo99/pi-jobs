@@ -55,7 +55,7 @@ export function InboxPage() {
   const waiting = [...pick(WAITING_STATES)].sort((a, b) => rank(a) - rank(b) || a.latest.id - b.latest.id);
   const approvals = waiting.filter((item) => item.state === "approval");
   const running = pick(["running"]);
-  const recent = pick(["released", "merged", "closed"]);
+  const recent = pick(["released", "partial", "merged", "closed"]);
 
   const bulk = async (action: "approve" | "dismiss") => {
     setBulkError(null);

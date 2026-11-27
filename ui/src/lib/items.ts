@@ -36,6 +36,7 @@ export const ITEM_STATE_LABELS: Record<ItemState, string> = {
   staged: "Staged",
   failed: "Failed",
   released: "Released",
+  partial: "Partly released",
   merged: "Merged",
   closed: "Closed",
 };

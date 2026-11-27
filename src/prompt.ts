@@ -4,7 +4,7 @@ const MAX_PAYLOAD_IN_PROMPT = 20_000;
 export const PAYLOAD_TOKEN = "{{payload}}";
 /** How a release's report gives its verdict, which `releaseOutcome` reads. */
 const VERDICT_LINE =
-  'Its first line is "Released" or "Not released" (with the reason); don\'t start any other line with those words (say "Still to ship" for what this release leaves out);';
+  'Its first line is "Released" or "Not released" (with the reason); don\'t start any other line with those words. When something people use doesn\'t have the change yet (a package, an app build), add one line per thing that starts "Still to ship:" and says what and why;';
 
 /** The run a follow-up continues, and what its agent printed. */
 export interface PreviousRun {
@@ -156,6 +156,20 @@ export function buildPrompt(
   }
   // Process arguments cannot contain NUL bytes.
   return lines.join("\n").replaceAll("\0", "");
+}
+
+/**
+ * What a release left for later, by its "Still to ship: …" lines (a release's report or its verify
+ * command's output): what each says, without "none"-like lines.
+ */
+export function stillToShip(text: string): string[] {
+  const found: string[] = [];
+  for (const raw of text.split("\n")) {
+    const match = /^still to ship\s*:\s*(.+)$/i.exec(raw.replace(/[*_`#>]/g, "").replace(/^\s*[-•]\s*/, "").trim());
+    const what = match?.[1]?.trim();
+    if (what && !/^(none|nothing|n\/a)\b/i.test(what) && !found.includes(what)) found.push(what);
+  }
+  return found;
 }
 
 /**

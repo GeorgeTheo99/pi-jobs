@@ -159,10 +159,23 @@ its page. **Approve & release** sends it out. A job releases in one of two ways,
 | What it may do | In this run only: merge, push, deploy and publish, as the instructions say. It is told to bring the commits onto the base branch on `origin` (rebasing and testing again if it moved), never force-push the base branch or skip hooks, stop at the first failure, and end with "Released" or "Not released" | Whatever the script does |
 | Suits | Repositories whose release is documented for agents (AGENTS.md): "release the way AGENTS.md says" | A fixed, fail-closed script |
 
-A job has one or the other, plus an optional **verify command** (a health check, say) that runs
-after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_RELEASE_BRANCH`
-(also as `PI_JOBS_SHIP_COMMIT` and `PI_JOBS_SHIP_BRANCH`), `PI_JOBS_BASE_REF`, `PI_JOBS_REPO` and
-`PI_JOBS_ITEM_ID` (plus `PI_JOBS_RUN_ID` and `PI_JOBS_JOB_ID`).
+A job has one or the other, plus a **verify command** that runs after the release and must exit 0.
+Make it check that the release reached the people it is for, not just that a server answers: the
+repository's own status script, say, that compares what each place users get it from (a server, a
+package's update feed, an app build) reports against `PI_JOBS_RELEASE_COMMIT`. Both get
+`PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_RELEASE_BRANCH` (also as `PI_JOBS_SHIP_COMMIT` and
+`PI_JOBS_SHIP_BRANCH`), `PI_JOBS_BASE_REF`, `PI_JOBS_REPO` and `PI_JOBS_ITEM_ID` (plus
+`PI_JOBS_RUN_ID` and `PI_JOBS_JOB_ID`).
+
+- **The verify command runs from the base before the release:** a temporary checkout of
+  `origin/<base>` as it was when the release started (deleted after), so the item's changes can't
+  change how its release is checked. A script release's `PI_JOBS_RELEASE_COMMIT` is the commit the
+  script left checked out (after a rebase or version bump). When it fails, the run's error ends with
+  the last line it printed.
+- **Still to ship.** A release's report or its verify command's output can list what doesn't have the
+  change yet, one `Still to ship: <what and why>` line each (a package built from an older commit,
+  say). The release succeeds, and the item is **Partly released**, with those lines on its page and
+  in the notification. Ship them separately (a package release job, say).
 
 - **What you approve.** The item's page shows a **Release** section after its changes: the commit
   that goes out, its size, how far `origin/<base>` has moved since and whether it merges cleanly
@@ -178,13 +191,14 @@ after the release and must exit 0. Both get `PI_JOBS_RELEASE_COMMIT`, `PI_JOBS_R
   result went out, stays in **Waiting for you** as failed and says it may have gone out. A released
   item can't be released again until new work lands. A script's release needs exit
   0 and the verify command.
-- **Release automatically** (`autoRelease`, needs a check command) releases a run at once when its
+- **Release automatically** (`autoRelease`, needs a check command and a verify command) releases a run at once when its
   check passed and its report's `Verdict:` line says implemented or fixed. Proposals, triage notes
   waiting for your decision, failures, unchecked work and reports without a `Verdict:` line still
   wait for you (and you are notified). With **Approve before running** off too, a watch or webhook
   job goes from report to release on its own: the agent treats reports as data, but it also writes
   the code the check runs and the verdict, so do that only for sources you trust. Jobs saved with
-  automatic release before 0.9.0 and no check command stop releasing by themselves until they get one.
+  automatic release and no check command or no verify command stop releasing by themselves until
+  they get one.
 - **Never retried.** A release may have done part of something irreversible, so after a failure you
   decide what comes next. **Release again** runs it once more, from the release's own head (it may
   have rebased or committed a version bump). A release a server stop cut off says so if its result

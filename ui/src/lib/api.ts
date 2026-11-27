@@ -2,7 +2,7 @@
 export type AgentId = string;
 
 export type Verdict = "implemented" | "fixed" | "needs_decision" | "cant_reproduce" | "duplicate" | "not_actionable" | "unknown";
-export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "merged" | "closed";
+export type ItemState = "approval" | "running" | "decision" | "review" | "staged" | "failed" | "released" | "partial" | "merged" | "closed";
 
 /** What a release would release: the item's head against the base branch on origin, and how the job releases. */
 export interface ReleasePreview {
@@ -121,6 +121,8 @@ export interface Run {
   exitCode: number | null;
   checkStatus: "passed" | "failed" | null;
   pushedTo: string | null;
+  /** What a release left for later (its "Still to ship:" lines, one a line); null when nothing. */
+  stillToShip: string | null;
   error: string | null;
   createdAt: string;
   startedAt: string | null;

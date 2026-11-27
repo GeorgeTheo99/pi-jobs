@@ -104,7 +104,7 @@ export function ItemPage() {
               <MessagesSquare aria-hidden className="size-3.5" />
               Chat about it
             </Link>
-            {itemFinished && item.state !== "merged" && item.state !== "released" && (
+            {itemFinished && item.state !== "merged" && item.state !== "released" && item.state !== "partial" && (
               <button
                 type="button"
                 className="btn btn-ghost"
@@ -118,6 +118,17 @@ export function ItemPage() {
       />
 
       <ErrorNote error={actionError} />
+
+      {item.state === "partial" && item.latestWork.stillToShip && (
+        <section aria-label="Still to ship" className="rounded-[10px] border border-amber/40 bg-amber/10 px-3.5 py-2.5 text-[13px]">
+          <p className="font-semibold text-amber">Partly released: still to ship</p>
+          <ul className="mt-1 list-disc pl-5">
+            {item.latestWork.stillToShip.split("\n").map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {waiting && (
         <Approval
@@ -152,7 +163,7 @@ export function ItemPage() {
       )}
 
       {item.withChanges && itemFinished && (
-        <Changes key={`changes-${item.withChanges.id}`} run={item.withChanges} job={job} wholeBranch shipped={item.state === "released" || item.state === "merged"} />
+        <Changes key={`changes-${item.withChanges.id}`} run={item.withChanges} job={job} wholeBranch shipped={item.state === "released" || item.state === "partial" || item.state === "merged"} />
       )}
 
       {item.canPromote && <PromoteBox key={`promote-${item.latest.id}`} item={item} onPromoted={() => void poll.refresh()} />}

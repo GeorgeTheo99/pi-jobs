@@ -992,7 +992,8 @@ test("a release run has the agent release the item: checked against git and the 
   const record = path.join(ctx.root, "release.json");
   const verified = path.join(ctx.root, "verified");
   const releaseInstructions = "Release it: push main, then check the version.";
-  const input = (overrides = {}) => ctx.jobInput({ releaseInstructions, verifyCommand: `test -f ${verified}`, retries: 2, ...overrides });
+  const input = (overrides = {}) =>
+    ctx.jobInput({ releaseInstructions, verifyCommand: `test -f ${verified} || { echo "server: not live"; exit 1; }`, retries: 2, ...overrides });
   const job = ctx.store.createJob(input(), null);
 
   ctx.useFakeAgent("commit");
@@ -1033,7 +1034,7 @@ test("a release run has the agent release the item: checked against git and the 
   ctx.useFakeAgent(`release:${record}`);
   const unverified = await waitForFinish(ctx.runner, (await ctx.runner.release(failed)).id);
   assert.equal(unverified.status, "failed");
-  assert.equal(unverified.error, "The verify command failed with code 1");
+  assert.equal(unverified.error, "The verify command failed with code 1: server: not live", "with the last line it printed");
   assert.match(readFileSync(ctx.runner.logPath(unverified.id), "utf8"), /The item's result is on origin\/main/);
 
   // The owner fixes what the check needed and releases again.
@@ -1229,6 +1230,36 @@ test("a run whose agent was removed from Settings fails without retries", async 
   assert.match(failed.error ?? "", /The agent "gone" is no longer in Settings/);
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(ctx.store.itemRuns(failed.itemId).length, 1, "not retried");
+});
+
+test("the verify command runs from the base before the release, and its Still to ship lines leave the item partly released", async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+  const remote = path.join(ctx.root, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  git(ctx.repo, "remote", "add", "origin", remote);
+  git(ctx.repo, "push", "-q", "origin", "main");
+  const record = path.join(ctx.root, "release.json");
+  // The release adds VERSION, so a check run in the released checkout would fail.
+  const verifyCommand = 'test ! -f VERSION && test -n "$PI_JOBS_RELEASE_COMMIT" && echo "Still to ship: Mac package (0.5.1 is older)"';
+  const job = ctx.store.createJob(ctx.jobInput({ releaseInstructions: "Release it", verifyCommand }), null);
+  ctx.useFakeAgent("commit");
+  const started = ctx.runner.trigger(job, "manual");
+  assert.ok("run" in started);
+  const changed = await waitForFinish(ctx.runner, started.run.id);
+  ctx.useFakeAgent(`release:${record}`);
+  const released = await waitForFinish(ctx.runner, (await ctx.runner.release(changed)).id);
+  assert.equal(released.status, "succeeded", `${released.error} ${readFileSync(ctx.runner.logPath(released.id), "utf8")}`);
+  assert.equal(released.stillToShip, "Mac package (0.5.1 is older)");
+  assert.equal(itemView(ctx.store.itemRuns(changed.itemId).map((r) => runView(r, false)), job).state, "partial");
+  assert.match(readFileSync(ctx.runner.logPath(released.id), "utf8"), /in a checkout of [0-9a-f]{12}, the base before the release/);
+  assert.ok(!existsSync(path.join(ctx.runner.worktreeDir, `job-${job.id}`, `verify-${released.id}`)), "the verify checkout is removed");
+});
+
+test("stillToShip reads a release's Still to ship lines", async () => {
+  const { stillToShip } = await import("../src/prompt.ts");
+  assert.deepEqual(stillToShip("Released\n- **Still to ship:** Mac package 0.5.2\nStill to ship: none\nstill to ship: TestFlight build"), ["Mac package 0.5.2", "TestFlight build"]);
+  assert.deepEqual(stillToShip("Released\nnothing left"), []);
 });
 
 test("releaseOutcome reads the report's Released line", async () => {

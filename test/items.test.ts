@@ -35,6 +35,7 @@ const run = (overrides: Partial<Run> & { merged?: boolean }): ReturnType<typeof 
       exitCode: 0,
       checkStatus: null,
       pushedTo: null,
+      stillToShip: null,
       error: null,
       createdAt: "2026-11-22T00:00:00Z",
       startedAt: null,
@@ -90,6 +91,8 @@ test("releases: released once one succeeds; releasable with instructions or a sc
   assert.deepEqual([broken.state, broken.canRelease], ["failed", true], "a failed release can be released again");
   const released = itemView([work, failedRelease, run({ id: 3, followUpOf: 2, mode: "release" })], releasing);
   assert.deepEqual([released.state, released.withChangesId, released.canRelease], ["released", 1, false], "done until new work");
+  const partly = itemView([work, run({ id: 2, followUpOf: 1, mode: "release", stillToShip: "Mac package: 0.5.1 lacks it" })], releasing);
+  assert.deepEqual([partly.state, partly.canRelease], ["partial", false], "out, with something still to ship");
   assert.equal(itemView([work, run({ id: 2, followUpOf: 1, mode: "ship", status: "running" })], script).canRelease, false);
   // A release that pushed, then failed its verify command: on main, but still the owner's to check.
   const pushedThenFailed = itemView([run({ id: 1, commits: 1, merged: true }), run({ id: 2, followUpOf: 1, mode: "release", status: "failed" })], releasing);
@@ -140,11 +143,12 @@ test("verdicts read negations as not done, and real report headlines", () => {
   assert.equal(parseVerdict("A bug in the fixed-width parser"), "unknown");
 });
 
-test("automatic releases go by the check and the report's Verdict: line only", () => {
-  const job = { checkCommand: "npm test" };
+test("automatic releases go by the check, the verify command and the report's Verdict: line only", () => {
+  const job = { checkCommand: "npm test", verifyCommand: "scripts/release-status" };
   assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Implemented it\nVerdict: implemented on this branch" }), null);
   assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Implemented it" }), "its report has no Verdict: line");
   assert.equal(autoReleaseBlocker(job, { checkStatus: "failed", summary: "Verdict: fixed" }), "its check didn't pass");
-  assert.equal(autoReleaseBlocker({ checkCommand: null }, { checkStatus: null, summary: "Verdict: fixed" }), "its check didn't pass");
+  assert.equal(autoReleaseBlocker({ checkCommand: null, verifyCommand: "true" }, { checkStatus: null, summary: "Verdict: fixed" }), "its check didn't pass");
+  assert.equal(autoReleaseBlocker({ ...job, verifyCommand: null }, { checkStatus: "passed", summary: "Verdict: fixed" }), "the job has no verify command");
   assert.equal(autoReleaseBlocker(job, { checkStatus: "passed", summary: "Verdict: wasn't fixed" }), "its report's verdict is needs decision");
 });

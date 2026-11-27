@@ -16,6 +16,7 @@ const PILL_CLASSES: Record<ItemState, string> = {
   staged: "pill-green",
   failed: "pill-red",
   released: "pill-violet",
+  partial: "pill-amber",
   merged: "pill-violet",
   closed: "pill-muted",
 };

@@ -138,6 +138,8 @@ export interface Run {
   checkStatus: "passed" | "failed" | null;
   /** Remote the branch was pushed to, or null. */
   pushedTo: string | null;
+  /** What a release left for later, by its report's or verify command's "Still to ship:" lines; null when nothing. */
+  stillToShip: string | null;
   error: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -342,6 +344,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "promote_instructions", "TEXT"],
   ["jobs", "promote_verify_command", "TEXT"],
   ["runs", "stage", "TEXT"],
+  ["runs", "still_to_ship", "TEXT"],
 ];
 
 type Row = Record<string, SQLInputValue>;
@@ -363,6 +366,7 @@ const RUN_COLUMNS: Record<keyof RunPatch, string> = {
   exitCode: "exit_code",
   checkStatus: "check_status",
   pushedTo: "pushed_to",
+  stillToShip: "still_to_ship",
   error: "error",
   startedAt: "started_at",
   finishedAt: "finished_at",
@@ -482,6 +486,7 @@ function toRun(row: Row): Run {
     exitCode: num(row.exit_code),
     checkStatus: row.check_status as Run["checkStatus"],
     pushedTo: (row.pushed_to as string | null) ?? null,
+    stillToShip: (row.still_to_ship as string | null) ?? null,
     error: row.error as string | null,
     createdAt: String(row.created_at),
     startedAt: row.started_at as string | null,

@@ -38,6 +38,9 @@ export function finishedNotification(run: Run, job: Job | null, retrying: boolea
       return { ...base, event: "staged", title: `Staged, ready to promote: ${name}`, message: short(headline || `Run #${run.id} released the item to staging.`) };
     }
     const what = run.stage === "production" ? "Promot" : "Releas";
+    if (run.status === "succeeded" && run.stillToShip) {
+      return { ...base, event: "released", title: `Partly released: ${name}`, message: short(`Still to ship: ${run.stillToShip.replaceAll("\n", "; ")}`) };
+    }
     return run.status === "succeeded"
       ? { ...base, event: "released", title: `${what}ed: ${name}`, message: short(headline || `Run #${run.id} released the item.`) }
       : { ...base, event: "release_failed", title: `${what}e failed: ${name}`, message: short(run.error ?? headline ?? "") };

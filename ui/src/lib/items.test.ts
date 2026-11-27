@@ -27,6 +27,7 @@ const run = (overrides: Partial<Run>): Run => ({
   exitCode: 0,
   checkStatus: null,
   pushedTo: null,
+  stillToShip: null,
   error: null,
   createdAt: "2026-11-22T00:00:00Z",
   startedAt: null,

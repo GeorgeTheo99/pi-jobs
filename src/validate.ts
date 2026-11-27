@@ -107,6 +107,9 @@ export async function validateJob(request: Record<string, unknown>, settings: Se
   // only when the request sets either, so a job saved before this rule can still be paused or renamed.
   else if (autoRelease && !checkCommand && (!existing || "autoRelease" in sent || "checkCommand" in sent)) {
     fields.autoRelease = "Add a check command first: automatic releases need a passing check";
+  } else if (autoRelease && !verifyCommand && (!existing || "autoRelease" in sent || "verifyCommand" in sent)) {
+    // Landing on the base branch isn't reaching people: the verify command checks the release is live.
+    fields.autoRelease = "Add a verify command first: automatic releases need one that checks the release is live";
   }
 
   const retries = Number(body.retries ?? DEFAULT_RETRIES);

@@ -21,6 +21,10 @@ test("finished runs notify only when they need the owner", () => {
   assert.equal(finishedNotification(run({ mode: "command", status: "failed", error: "exit 1" }), job, false)?.event, "failed");
   assert.equal(finishedNotification(run({ summary: "Nothing to do" }), job, false), null);
   assert.equal(finishedNotification(run({ mode: "release" }), job, false)?.event, "released");
+  assert.deepEqual(
+    [finishedNotification(run({ mode: "release", stillToShip: "Mac package: 0.5.1 lacks it" }), job, false)?.title, finishedNotification(run({ mode: "release", stillToShip: "Mac package: 0.5.1 lacks it" }), job, false)?.message],
+    ["Partly released: Triage", "Still to ship: Mac package: 0.5.1 lacks it"],
+  );
   assert.equal(finishedNotification(run({ mode: "ship", status: "failed", error: "exit 1" }), job, false)?.event, "release_failed");
   assert.deepEqual(
     [finishedNotification(run({ mode: "release", stage: "staging" }), job, false)?.event, finishedNotification(run({ mode: "release", stage: "staging" }), job, false)?.title],
@@ -29,7 +33,7 @@ test("finished runs notify only when they need the owner", () => {
   assert.equal(finishedNotification(run({ mode: "release", stage: "staging", status: "failed" }), job, false)?.event, "release_failed");
   assert.equal(finishedNotification(run({ mode: "release", stage: "production" }), job, false)?.title, "Promoted: Triage");
   assert.equal(finishedNotification(run({ mode: "release", stage: "production", status: "failed" }), job, false)?.title, "Promote failed: Triage");
-  const auto = { ...job, autoRelease: true, enabled: true, checkCommand: "npm test", releaseInstructions: "Release it" } as Job;
+  const auto = { ...job, autoRelease: true, enabled: true, checkCommand: "npm test", verifyCommand: "true", releaseInstructions: "Release it" } as Job;
   assert.equal(finishedNotification(run({ summary: "Implemented it\nVerdict: implemented", commits: 1, checkStatus: "passed" }), auto, false), null, "its release says it");
   assert.equal(finishedNotification(run({ summary: "Implemented it\nVerdict: implemented", commits: 1, checkStatus: "failed" }), auto, false)?.event, "review");
   assert.equal(finishedNotification(run({ summary: "Implemented it", commits: 1, checkStatus: "passed" }), auto, false)?.event, "review", "no Verdict: line, no automatic release");

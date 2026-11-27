@@ -234,6 +234,8 @@ test("release instructions and release scripts exclude each other; autoRelease n
   assert.match(lonely.json.fields.autoRelease, /release instructions or a release script first/);
   const unchecked = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true });
   assert.match(unchecked.json.fields.autoRelease, /Add a check command first/);
+  const unverified = await app.call("POST", "/api/jobs", { ...base, releaseInstructions: "Release it", autoRelease: true, checkCommand: "true" });
+  assert.match(unverified.json.fields.autoRelease, /Add a verify command first/);
   const verifyAlone = await app.call("POST", "/api/jobs", { ...base, verifyCommand: "true" });
   assert.match(verifyAlone.json.fields.verifyCommand, /release instructions or a release script first/);
   const promoteAlone = await app.call("POST", "/api/jobs", { ...base, promoteInstructions: "Promote it", promoteVerifyCommand: "true" });

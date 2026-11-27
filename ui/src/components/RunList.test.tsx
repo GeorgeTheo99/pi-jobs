@@ -29,6 +29,7 @@ const base: Run = {
   exitCode: 0,
   checkStatus: null,
   pushedTo: null,
+  stillToShip: null,
   error: null,
   createdAt: new Date().toISOString(),
   startedAt: new Date().toISOString(),

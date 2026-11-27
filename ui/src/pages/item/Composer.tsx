@@ -59,7 +59,7 @@ const PRESETS: Preset[] = [
     label: "Update the reply",
     text: () =>
       'Write an updated suggested reply to the reporter that says what happened to their report now (fixed, released, or still open), in two or three plain sentences with no promised dates. Put it under a "Suggested reply" heading.',
-    when: (item) => item.runs.some((r) => splitReply(r.summary ?? "").reply !== null) && (item.state === "released" || item.state === "review"),
+    when: (item) => item.runs.some((r) => splitReply(r.summary ?? "").reply !== null) && (item.state === "released" || item.state === "partial" || item.state === "review"),
   },
   {
     id: "reply",
